@@ -2147,6 +2147,93 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         }
     }
 
+    if let Some(expected_matching) = fixture.expected.maximal_matching {
+        match context.maximal_matching_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.matching.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_matching.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_matching".to_owned(),
+                        message: format!(
+                            "maximal_matching mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_matching".to_owned(),
+                message: "expected maximal_matching result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_wm) = fixture.expected.max_weight_matching {
+        match context.max_weight_matching_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.matching.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_wm.matching.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_matching".to_owned(),
+                        message: format!(
+                            "max_weight_matching edges mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+                if (actual.total_weight - expected_wm.total_weight).abs() > 1e-9 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_matching".to_owned(),
+                        message: format!(
+                            "max_weight_matching total_weight mismatch: expected {}, got {}",
+                            expected_wm.total_weight, actual.total_weight
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_matching".to_owned(),
+                message: "expected max_weight_matching result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_wm) = fixture.expected.min_weight_matching {
+        match context.min_weight_matching_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.matching.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_wm.matching.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_matching".to_owned(),
+                        message: format!(
+                            "min_weight_matching edges mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+                if (actual.total_weight - expected_wm.total_weight).abs() > 1e-9 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_matching".to_owned(),
+                        message: format!(
+                            "min_weight_matching total_weight mismatch: expected {}, got {}",
+                            expected_wm.total_weight, actual.total_weight
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_matching".to_owned(),
+                message: "expected min_weight_matching result but none produced".to_owned(),
+            }),
+        }
+    }
+
     if let Some(expected_dispatch) = fixture.expected.dispatch {
         match context.dispatch_decision {
             Some(actual) => {
