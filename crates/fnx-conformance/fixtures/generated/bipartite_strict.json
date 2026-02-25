@@ -1,0 +1,30 @@
+{
+    "suite": "bipartite_v1",
+    "mode": "strict",
+    "operations": [
+        { "op": "add_edge", "left": "a", "right": "b" },
+        { "op": "add_edge", "left": "a", "right": "d" },
+        { "op": "add_edge", "left": "c", "right": "b" },
+        { "op": "add_edge", "left": "c", "right": "d" },
+        { "op": "add_edge", "left": "e", "right": "b" },
+        { "op": "is_bipartite_query" },
+        { "op": "bipartite_sets_query" }
+    ],
+    "expected": {
+        "graph": {
+            "nodes": ["a", "b", "d", "c", "e"],
+            "edges": [
+                { "left": "a", "right": "b", "attrs": {} },
+                { "left": "a", "right": "d", "attrs": {} },
+                { "left": "b", "right": "c", "attrs": {} },
+                { "left": "b", "right": "e", "attrs": {} },
+                { "left": "c", "right": "d", "attrs": {} }
+            ]
+        },
+        "is_bipartite": true,
+        "bipartite_sets": {
+            "set_a": ["a", "c", "e"],
+            "set_b": ["b", "d"]
+        }
+    }
+}

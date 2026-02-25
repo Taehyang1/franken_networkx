@@ -114,7 +114,10 @@
     "generators",
     "algorithm_structure",
     "algorithm_matching",
-    "algorithm_flow"
+    "algorithm_flow",
+    "algorithm_distance",
+    "algorithm_mst",
+    "algorithm_coloring"
   ],
   "required_replay_schema_refs": [
     "artifacts/conformance/schema/v1/structured_test_log_schema_v1.json",

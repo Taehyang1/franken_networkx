@@ -1,15 +1,26 @@
 #![forbid(unsafe_code)]
 
 use fnx_algorithms::{
-    CentralityScore, ComplexityWitness, EdgeCentralityScore, EdgeCutResult, GlobalEdgeCutResult,
-    MaximalMatchingResult, MinimumCutResult, WeightedMatchingResult, WeightedShortestPathsResult,
-    articulation_points, bellman_ford_shortest_paths, betweenness_centrality, bridges,
-    closeness_centrality, connected_components, degree_centrality, edge_betweenness_centrality,
+    AverageShortestPathLengthResult, CentralityScore, ComplexityWitness, DensityResult,
+    DistanceMeasuresResult,
+    EdgeCentralityScore, EdgeCutResult, GlobalEdgeCutResult, HasPathResult, IsConnectedResult,
+    MaximalMatchingResult, MinimumSpanningTreeResult, ShortestPathLengthResult,
+    BipartiteSetsResult, GreedyColorResult, IsBipartiteResult, IsForestResult, IsTreeResult,
+    MinimumCutResult, SquareClusteringResult, TrianglesResult,
+    WeightedMatchingResult, WeightedShortestPathsResult,
+    articulation_points, average_shortest_path_length, bellman_ford_shortest_paths,
+    betweenness_centrality, bridges,
+    closeness_centrality, clustering_coefficient, connected_components, degree_centrality,
+    density, distance_measures, edge_betweenness_centrality, has_path,
     edge_connectivity_edmonds_karp, eigenvector_centrality, global_edge_connectivity_edmonds_karp,
-    global_minimum_edge_cut_edmonds_karp, harmonic_centrality, hits_centrality, katz_centrality,
+    global_minimum_edge_cut_edmonds_karp, harmonic_centrality, hits_centrality, is_connected,
+    katz_centrality,
     max_flow_edmonds_karp, max_weight_matching, maximal_matching, min_weight_matching,
-    minimum_cut_edmonds_karp, minimum_st_edge_cut_edmonds_karp, multi_source_dijkstra,
-    number_connected_components, pagerank, shortest_path_unweighted, shortest_path_weighted,
+    minimum_cut_edmonds_karp, minimum_spanning_tree, minimum_st_edge_cut_edmonds_karp,
+    multi_source_dijkstra,
+    bipartite_sets, greedy_color, is_bipartite, is_forest, is_tree,
+    number_connected_components, pagerank, shortest_path_length, shortest_path_unweighted,
+    shortest_path_weighted, square_clustering, triangles,
 };
 use fnx_classes::{AttrMap, EdgeSnapshot, Graph, GraphSnapshot};
 use fnx_convert::{AdjacencyPayload, EdgeListPayload, GraphConverter};
@@ -302,6 +313,19 @@ enum Operation {
     HitsCentralityQuery,
     PagerankQuery,
     EigenvectorCentralityQuery,
+    ClusteringCoefficientQuery,
+    DistanceMeasuresQuery,
+    AverageShortestPathLengthQuery,
+    IsConnectedQuery,
+    DensityQuery,
+    HasPathQuery {
+        source: String,
+        target: String,
+    },
+    ShortestPathLengthQuery {
+        source: String,
+        target: String,
+    },
     ConnectedComponentsQuery,
     NumberConnectedComponentsQuery,
     ArticulationPointsQuery,
@@ -327,6 +351,17 @@ enum Operation {
         #[serde(default = "default_weight_attr")]
         weight_attr: String,
     },
+    MinimumSpanningTreeQuery {
+        #[serde(default = "default_weight_attr")]
+        weight_attr: String,
+    },
+    TrianglesQuery,
+    SquareClusteringQuery,
+    IsTreeQuery,
+    IsForestQuery,
+    GreedyColorQuery,
+    IsBipartiteQuery,
+    BipartiteSetsQuery,
     DispatchResolve {
         operation: String,
         #[serde(default)]
@@ -426,6 +461,32 @@ struct ExpectedState {
     #[serde(default)]
     eigenvector_centrality: Option<Vec<ExpectedCentralityScore>>,
     #[serde(default)]
+    clustering_coefficient: Option<Vec<ExpectedCentralityScore>>,
+    #[serde(default)]
+    average_clustering: Option<f64>,
+    #[serde(default)]
+    transitivity: Option<f64>,
+    #[serde(default)]
+    eccentricity: Option<Vec<ExpectedEccentricityEntry>>,
+    #[serde(default)]
+    diameter: Option<usize>,
+    #[serde(default)]
+    radius: Option<usize>,
+    #[serde(default)]
+    center: Option<Vec<String>>,
+    #[serde(default)]
+    periphery: Option<Vec<String>>,
+    #[serde(default)]
+    average_shortest_path_length: Option<f64>,
+    #[serde(default)]
+    is_connected: Option<bool>,
+    #[serde(default)]
+    density: Option<f64>,
+    #[serde(default)]
+    has_path: Option<bool>,
+    #[serde(default)]
+    shortest_path_length: Option<usize>,
+    #[serde(default)]
     connected_components: Option<Vec<Vec<String>>>,
     #[serde(default)]
     number_connected_components: Option<usize>,
@@ -449,6 +510,24 @@ struct ExpectedState {
     max_weight_matching: Option<ExpectedWeightedMatching>,
     #[serde(default)]
     min_weight_matching: Option<ExpectedWeightedMatching>,
+    #[serde(default)]
+    minimum_spanning_tree: Option<ExpectedMst>,
+    #[serde(default)]
+    triangles: Option<Vec<ExpectedTriangleCount>>,
+    #[serde(default)]
+    square_clustering: Option<Vec<ExpectedCentralityScore>>,
+    #[serde(default)]
+    is_tree: Option<bool>,
+    #[serde(default)]
+    is_forest: Option<bool>,
+    #[serde(default)]
+    greedy_coloring: Option<Vec<ExpectedNodeColor>>,
+    #[serde(default)]
+    num_colors: Option<usize>,
+    #[serde(default)]
+    is_bipartite: Option<bool>,
+    #[serde(default)]
+    bipartite_sets: Option<ExpectedBipartiteSets>,
     #[serde(default)]
     dispatch: Option<ExpectedDispatch>,
     #[serde(default)]
@@ -516,6 +595,12 @@ struct ExpectedEdgeCentralityScore {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct ExpectedEccentricityEntry {
+    node: String,
+    value: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct ExpectedWeightedDistance {
     node: String,
     distance: f64,
@@ -530,6 +615,37 @@ struct ExpectedWeightedPredecessor {
 #[derive(Debug, Clone, Deserialize)]
 struct ExpectedWeightedMatching {
     matching: Vec<(String, String)>,
+    total_weight: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedBipartiteSets {
+    set_a: Vec<String>,
+    set_b: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedNodeColor {
+    node: String,
+    color: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedTriangleCount {
+    node: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedMstEdge {
+    left: String,
+    right: String,
+    weight: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedMst {
+    edges: Vec<ExpectedMstEdge>,
     total_weight: f64,
 }
 
@@ -561,6 +677,15 @@ struct ExecutionContext {
     hits_authorities_result: Option<Vec<CentralityScore>>,
     pagerank_result: Option<Vec<CentralityScore>>,
     eigenvector_centrality_result: Option<Vec<CentralityScore>>,
+    clustering_coefficient_result: Option<Vec<CentralityScore>>,
+    average_clustering_result: Option<f64>,
+    transitivity_result: Option<f64>,
+    distance_measures_result: Option<DistanceMeasuresResult>,
+    average_shortest_path_length_result: Option<AverageShortestPathLengthResult>,
+    is_connected_result: Option<IsConnectedResult>,
+    density_result: Option<DensityResult>,
+    has_path_result: Option<HasPathResult>,
+    shortest_path_length_result: Option<ShortestPathLengthResult>,
     connected_components_result: Option<Vec<Vec<String>>>,
     number_connected_components_result: Option<usize>,
     articulation_points_result: Option<Vec<String>>,
@@ -570,6 +695,14 @@ struct ExecutionContext {
     maximal_matching_result: Option<MaximalMatchingResult>,
     max_weight_matching_result: Option<WeightedMatchingResult>,
     min_weight_matching_result: Option<WeightedMatchingResult>,
+    minimum_spanning_tree_result: Option<MinimumSpanningTreeResult>,
+    triangles_result: Option<TrianglesResult>,
+    square_clustering_result: Option<SquareClusteringResult>,
+    is_tree_result: Option<IsTreeResult>,
+    is_forest_result: Option<IsForestResult>,
+    greedy_color_result: Option<GreedyColorResult>,
+    is_bipartite_result: Option<IsBipartiteResult>,
+    bipartite_sets_result: Option<BipartiteSetsResult>,
     warnings: Vec<String>,
     witness: Option<ComplexityWitness>,
 }
@@ -1324,6 +1457,15 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         hits_authorities_result: None,
         pagerank_result: None,
         eigenvector_centrality_result: None,
+        clustering_coefficient_result: None,
+        average_clustering_result: None,
+        transitivity_result: None,
+        distance_measures_result: None,
+        average_shortest_path_length_result: None,
+        is_connected_result: None,
+        density_result: None,
+        has_path_result: None,
+        shortest_path_length_result: None,
         connected_components_result: None,
         number_connected_components_result: None,
         articulation_points_result: None,
@@ -1333,6 +1475,14 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         maximal_matching_result: None,
         max_weight_matching_result: None,
         min_weight_matching_result: None,
+        minimum_spanning_tree_result: None,
+        triangles_result: None,
+        square_clustering_result: None,
+        is_tree_result: None,
+        is_forest_result: None,
+        greedy_color_result: None,
+        is_bipartite_result: None,
+        bipartite_sets_result: None,
         warnings: Vec::new(),
         witness: None,
     };
@@ -1475,6 +1625,42 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
                 context.eigenvector_centrality_result = Some(result.scores);
                 context.witness = Some(result.witness);
             }
+            Operation::ClusteringCoefficientQuery => {
+                let result = clustering_coefficient(&context.graph);
+                context.clustering_coefficient_result = Some(result.scores);
+                context.average_clustering_result = Some(result.average_clustering);
+                context.transitivity_result = Some(result.transitivity);
+                context.witness = Some(result.witness);
+            }
+            Operation::DistanceMeasuresQuery => {
+                let result = distance_measures(&context.graph);
+                context.witness = Some(result.witness.clone());
+                context.distance_measures_result = Some(result);
+            }
+            Operation::AverageShortestPathLengthQuery => {
+                let result = average_shortest_path_length(&context.graph);
+                context.witness = Some(result.witness.clone());
+                context.average_shortest_path_length_result = Some(result);
+            }
+            Operation::IsConnectedQuery => {
+                let result = is_connected(&context.graph);
+                context.witness = Some(result.witness.clone());
+                context.is_connected_result = Some(result);
+            }
+            Operation::DensityQuery => {
+                let result = density(&context.graph);
+                context.density_result = Some(result);
+            }
+            Operation::HasPathQuery { source, target } => {
+                let result = has_path(&context.graph, &source, &target);
+                context.witness = Some(result.witness.clone());
+                context.has_path_result = Some(result);
+            }
+            Operation::ShortestPathLengthQuery { source, target } => {
+                let result = shortest_path_length(&context.graph, &source, &target);
+                context.witness = Some(result.witness.clone());
+                context.shortest_path_length_result = Some(result);
+            }
             Operation::ConnectedComponentsQuery => {
                 let result = connected_components(&context.graph);
                 context.connected_components_result = Some(result.components);
@@ -1531,6 +1717,46 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
             Operation::MinWeightMatchingQuery { weight_attr } => {
                 let result = min_weight_matching(&context.graph, &weight_attr);
                 context.min_weight_matching_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::MinimumSpanningTreeQuery { weight_attr } => {
+                let result = minimum_spanning_tree(&context.graph, &weight_attr);
+                context.minimum_spanning_tree_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::TrianglesQuery => {
+                let result = triangles(&context.graph);
+                context.triangles_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::SquareClusteringQuery => {
+                let result = square_clustering(&context.graph);
+                context.square_clustering_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::IsTreeQuery => {
+                let result = is_tree(&context.graph);
+                context.is_tree_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::IsForestQuery => {
+                let result = is_forest(&context.graph);
+                context.is_forest_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::GreedyColorQuery => {
+                let result = greedy_color(&context.graph);
+                context.greedy_color_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::IsBipartiteQuery => {
+                let result = is_bipartite(&context.graph);
+                context.is_bipartite_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::BipartiteSetsQuery => {
+                let result = bipartite_sets(&context.graph);
+                context.bipartite_sets_result = Some(result.clone());
                 context.witness = Some(result.witness);
             }
             Operation::DispatchResolve {
@@ -2158,6 +2384,276 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         }
     }
 
+    if let Some(expected_scores) = fixture.expected.clustering_coefficient {
+        match context.clustering_coefficient_result.as_ref() {
+            Some(actual_scores) => {
+                compare_centrality_scores(
+                    "clustering_coefficient",
+                    actual_scores,
+                    &expected_scores,
+                    &mut mismatches,
+                );
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_centrality".to_owned(),
+                message: "expected clustering_coefficient result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_avg) = fixture.expected.average_clustering {
+        match context.average_clustering_result {
+            Some(actual_avg) => {
+                if (actual_avg - expected_avg).abs() > 1e-12 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_centrality".to_owned(),
+                        message: format!(
+                            "average_clustering mismatch: expected {expected_avg}, got {actual_avg}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_centrality".to_owned(),
+                message: "expected average_clustering result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_trans) = fixture.expected.transitivity {
+        match context.transitivity_result {
+            Some(actual_trans) => {
+                if (actual_trans - expected_trans).abs() > 1e-12 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_centrality".to_owned(),
+                        message: format!(
+                            "transitivity mismatch: expected {expected_trans}, got {actual_trans}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_centrality".to_owned(),
+                message: "expected transitivity result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_ecc) = fixture.expected.eccentricity.as_ref() {
+        match context.distance_measures_result.as_ref() {
+            Some(actual) => {
+                let actual_map: std::collections::BTreeMap<&str, usize> = actual
+                    .eccentricity
+                    .iter()
+                    .map(|e| (e.node.as_str(), e.value))
+                    .collect();
+                let expected_map: std::collections::BTreeMap<&str, usize> = expected_ecc
+                    .iter()
+                    .map(|e| (e.node.as_str(), e.value))
+                    .collect();
+                if actual_map != expected_map {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "eccentricity mismatch: expected {expected_map:?}, got {actual_map:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected eccentricity result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_diam) = fixture.expected.diameter {
+        match context.distance_measures_result.as_ref() {
+            Some(actual) => {
+                if actual.diameter != expected_diam {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "diameter mismatch: expected {expected_diam}, got {}",
+                            actual.diameter
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected diameter result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_rad) = fixture.expected.radius {
+        match context.distance_measures_result.as_ref() {
+            Some(actual) => {
+                if actual.radius != expected_rad {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "radius mismatch: expected {expected_rad}, got {}",
+                            actual.radius
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected radius result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_center) = fixture.expected.center.as_ref() {
+        match context.distance_measures_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.center.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_center.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "center mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected center result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_periphery) = fixture.expected.periphery.as_ref() {
+        match context.distance_measures_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.periphery.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_periphery.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "periphery mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected periphery result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_avg) = fixture.expected.average_shortest_path_length {
+        match context.average_shortest_path_length_result.as_ref() {
+            Some(actual) => {
+                if (actual.average_shortest_path_length - expected_avg).abs() > 1e-12 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_distance".to_owned(),
+                        message: format!(
+                            "average_shortest_path_length mismatch: expected {expected_avg}, got {}",
+                            actual.average_shortest_path_length
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_distance".to_owned(),
+                message: "expected average_shortest_path_length result but none produced"
+                    .to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_conn) = fixture.expected.is_connected {
+        match context.is_connected_result.as_ref() {
+            Some(actual) => {
+                if actual.is_connected != expected_conn {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_components".to_owned(),
+                        message: format!(
+                            "is_connected mismatch: expected {expected_conn}, got {}",
+                            actual.is_connected
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_components".to_owned(),
+                message: "expected is_connected result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_dens) = fixture.expected.density {
+        match context.density_result.as_ref() {
+            Some(actual) => {
+                if (actual.density - expected_dens).abs() > 1e-12 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_components".to_owned(),
+                        message: format!(
+                            "density mismatch: expected {expected_dens}, got {}",
+                            actual.density
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_components".to_owned(),
+                message: "expected density result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_hp) = fixture.expected.has_path {
+        match context.has_path_result.as_ref() {
+            Some(actual) => {
+                if actual.has_path != expected_hp {
+                    mismatches.push(Mismatch {
+                        category: "algorithm".to_owned(),
+                        message: format!(
+                            "has_path mismatch: expected {expected_hp}, got {}",
+                            actual.has_path
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected has_path result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_spl) = fixture.expected.shortest_path_length {
+        match context.shortest_path_length_result.as_ref() {
+            Some(actual) => {
+                if actual.length != Some(expected_spl) {
+                    mismatches.push(Mismatch {
+                        category: "algorithm".to_owned(),
+                        message: format!(
+                            "shortest_path_length mismatch: expected Some({expected_spl}), got {:?}",
+                            actual.length
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected shortest_path_length result but none produced".to_owned(),
+            }),
+        }
+    }
+
     if let Some(expected_components) = fixture.expected.connected_components
         && context.connected_components_result != Some(expected_components.clone())
     {
@@ -2489,6 +2985,268 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         }
     }
 
+    if let Some(expected_mst) = fixture.expected.minimum_spanning_tree {
+        match context.minimum_spanning_tree_result.as_ref() {
+            Some(actual) => {
+                let mut actual_edges: Vec<(String, String, f64)> = actual
+                    .edges
+                    .iter()
+                    .map(|e| (e.left.clone(), e.right.clone(), e.weight))
+                    .collect();
+                actual_edges.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.cmp(&b.1))
+                });
+                let mut expected_edges: Vec<(String, String, f64)> = expected_mst
+                    .edges
+                    .iter()
+                    .map(|e| (e.left.clone(), e.right.clone(), e.weight))
+                    .collect();
+                expected_edges.sort_by(|a, b| {
+                    a.0.cmp(&b.0)
+                        .then_with(|| a.1.cmp(&b.1))
+                });
+                if actual_edges.len() != expected_edges.len() {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_mst".to_owned(),
+                        message: format!(
+                            "minimum_spanning_tree edge count mismatch: expected {}, got {}",
+                            expected_edges.len(),
+                            actual_edges.len()
+                        ),
+                    });
+                } else {
+                    for (i, (a, e)) in actual_edges.iter().zip(expected_edges.iter()).enumerate() {
+                        if a.0 != e.0 || a.1 != e.1 || (a.2 - e.2).abs() > 1e-9 {
+                            mismatches.push(Mismatch {
+                                category: "algorithm_mst".to_owned(),
+                                message: format!(
+                                    "minimum_spanning_tree edge {i} mismatch: expected ({}, {}, {}), got ({}, {}, {})",
+                                    e.0, e.1, e.2, a.0, a.1, a.2
+                                ),
+                            });
+                        }
+                    }
+                }
+                if (actual.total_weight - expected_mst.total_weight).abs() > 1e-9 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_mst".to_owned(),
+                        message: format!(
+                            "minimum_spanning_tree total_weight mismatch: expected {}, got {}",
+                            expected_mst.total_weight, actual.total_weight
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_mst".to_owned(),
+                message: "expected minimum_spanning_tree result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_tri) = &fixture.expected.triangles {
+        match context.triangles_result.as_ref() {
+            Some(actual) => {
+                let actual_map: BTreeMap<&str, usize> = actual
+                    .triangles
+                    .iter()
+                    .map(|t| (t.node.as_str(), t.count))
+                    .collect();
+                let expected_map: BTreeMap<&str, usize> = expected_tri
+                    .iter()
+                    .map(|t| (t.node.as_str(), t.count))
+                    .collect();
+                if actual_map != expected_map {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_triangles".to_owned(),
+                        message: format!(
+                            "triangles mismatch: expected {expected_map:?}, got {actual_map:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_triangles".to_owned(),
+                message: "expected triangles result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_sq) = &fixture.expected.square_clustering {
+        match context.square_clustering_result.as_ref() {
+            Some(actual) => {
+                let actual_map: BTreeMap<&str, &f64> = actual
+                    .scores
+                    .iter()
+                    .map(|s| (s.node.as_str(), &s.score))
+                    .collect();
+                for exp in expected_sq {
+                    match actual_map.get(exp.node.as_str()) {
+                        Some(&&actual_score) => {
+                            if (actual_score - exp.score).abs() > 1e-9 {
+                                mismatches.push(Mismatch {
+                                    category: "algorithm_square_clustering".to_owned(),
+                                    message: format!(
+                                        "square_clustering score mismatch for {}: expected {}, got {}",
+                                        exp.node, exp.score, actual_score
+                                    ),
+                                });
+                            }
+                        }
+                        None => mismatches.push(Mismatch {
+                            category: "algorithm_square_clustering".to_owned(),
+                            message: format!(
+                                "square_clustering missing node {}",
+                                exp.node
+                            ),
+                        }),
+                    }
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_square_clustering".to_owned(),
+                message: "expected square_clustering result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_is_tree) = fixture.expected.is_tree {
+        match context.is_tree_result.as_ref() {
+            Some(actual) => {
+                if actual.is_tree != expected_is_tree {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_structure".to_owned(),
+                        message: format!(
+                            "is_tree mismatch: expected {expected_is_tree}, got {}",
+                            actual.is_tree
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_structure".to_owned(),
+                message: "expected is_tree result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_is_forest) = fixture.expected.is_forest {
+        match context.is_forest_result.as_ref() {
+            Some(actual) => {
+                if actual.is_forest != expected_is_forest {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_structure".to_owned(),
+                        message: format!(
+                            "is_forest mismatch: expected {expected_is_forest}, got {}",
+                            actual.is_forest
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_structure".to_owned(),
+                message: "expected is_forest result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_coloring) = &fixture.expected.greedy_coloring {
+        match context.greedy_color_result.as_ref() {
+            Some(actual) => {
+                let actual_map: BTreeMap<&str, usize> = actual
+                    .coloring
+                    .iter()
+                    .map(|c| (c.node.as_str(), c.color))
+                    .collect();
+                let expected_map: BTreeMap<&str, usize> = expected_coloring
+                    .iter()
+                    .map(|c| (c.node.as_str(), c.color))
+                    .collect();
+                if actual_map != expected_map {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_coloring".to_owned(),
+                        message: format!(
+                            "greedy_coloring mismatch: expected {expected_map:?}, got {actual_map:?}"
+                        ),
+                    });
+                }
+                if let Some(expected_nc) = fixture.expected.num_colors
+                    && actual.num_colors != expected_nc
+                {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_coloring".to_owned(),
+                        message: format!(
+                            "num_colors mismatch: expected {expected_nc}, got {}",
+                            actual.num_colors
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_coloring".to_owned(),
+                message: "expected greedy_coloring result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_bip) = fixture.expected.is_bipartite {
+        match context.is_bipartite_result.as_ref() {
+            Some(actual) => {
+                if actual.is_bipartite != expected_bip {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_structure".to_owned(),
+                        message: format!(
+                            "is_bipartite mismatch: expected {expected_bip}, got {}",
+                            actual.is_bipartite
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_structure".to_owned(),
+                message: "expected is_bipartite result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_sets) = &fixture.expected.bipartite_sets {
+        match context.bipartite_sets_result.as_ref() {
+            Some(actual) => {
+                if !actual.is_bipartite {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_structure".to_owned(),
+                        message: "bipartite_sets: graph reported as not bipartite".to_owned(),
+                    });
+                } else {
+                    let mut actual_a = actual.set_a.clone();
+                    let mut actual_b = actual.set_b.clone();
+                    actual_a.sort();
+                    actual_b.sort();
+                    let mut expected_a = expected_sets.set_a.clone();
+                    let mut expected_b = expected_sets.set_b.clone();
+                    expected_a.sort();
+                    expected_b.sort();
+                    // Sets could be swapped (set_a <-> set_b), so check both orderings
+                    let match_direct = actual_a == expected_a && actual_b == expected_b;
+                    let match_swapped = actual_a == expected_b && actual_b == expected_a;
+                    if !match_direct && !match_swapped {
+                        mismatches.push(Mismatch {
+                            category: "algorithm_structure".to_owned(),
+                            message: format!(
+                                "bipartite_sets mismatch: expected ({expected_a:?}, {expected_b:?}), got ({actual_a:?}, {actual_b:?})"
+                            ),
+                        });
+                    }
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_structure".to_owned(),
+                message: "expected bipartite_sets result but none produced".to_owned(),
+            }),
+        }
+    }
+
     if let Some(expected_dispatch) = fixture.expected.dispatch {
         match context.dispatch_decision {
             Some(actual) => {
@@ -2697,6 +3455,13 @@ fn default_dispatch_registry(mode: CompatibilityMode) -> BackendRegistry {
             "hits_centrality",
             "pagerank",
             "eigenvector_centrality",
+            "clustering_coefficient",
+            "distance_measures",
+            "average_shortest_path_length",
+            "is_connected",
+            "density",
+            "has_path",
+            "shortest_path_length",
             "generate_path_graph",
             "generate_star_graph",
             "generate_cycle_graph",
@@ -2708,6 +3473,14 @@ fn default_dispatch_registry(mode: CompatibilityMode) -> BackendRegistry {
             "maximal_matching",
             "max_weight_matching",
             "min_weight_matching",
+            "minimum_spanning_tree",
+            "triangles",
+            "square_clustering",
+            "is_tree",
+            "is_forest",
+            "greedy_color",
+            "is_bipartite",
+            "bipartite_sets",
         ]),
         allow_in_strict: true,
         allow_in_hardened: true,

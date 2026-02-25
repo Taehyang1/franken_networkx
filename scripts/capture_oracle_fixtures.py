@@ -497,6 +497,37 @@ def main() -> int:
         },
     }
 
+    clustering_graph = nx.Graph()
+    clustering_graph.add_edge("a", "b")
+    clustering_graph.add_edge("a", "c")
+    clustering_graph.add_edge("b", "c")
+    clustering_graph.add_edge("b", "d")
+    clustering_graph.add_edge("c", "d")
+    clustering_scores = nx.clustering(clustering_graph)
+    avg_clustering = nx.average_clustering(clustering_graph)
+    transitivity = nx.transitivity(clustering_graph)
+    clustering_fixture = {
+        "suite": "clustering_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "a", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "clustering_coefficient_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(clustering_graph),
+            "clustering_coefficient": [
+                {"node": str(node), "score": float(score)}
+                for node, score in clustering_scores.items()
+            ],
+            "average_clustering": float(avg_clustering),
+            "transitivity": float(transitivity),
+        },
+    }
+
     write_json(fixture_root / "convert_edge_list_strict.json", convert_fixture)
     write_json(fixture_root / "readwrite_roundtrip_strict.json", readwrite_fixture)
     write_json(fixture_root / "dispatch_route_strict.json", dispatch_fixture)
@@ -529,6 +560,306 @@ def main() -> int:
     write_json(
         fixture_root / "matching_min_weight_strict.json", min_weight_matching_fixture
     )
+    write_json(
+        fixture_root / "clustering_coefficient_strict.json", clustering_fixture
+    )
+
+    # --- Distance measures fixture ---
+    distance_graph = nx.Graph()
+    distance_graph.add_edge("a", "b")
+    distance_graph.add_edge("b", "c")
+    distance_graph.add_edge("c", "d")
+    distance_graph.add_edge("d", "e")
+    distance_graph.add_edge("b", "d")
+    ecc = nx.eccentricity(distance_graph)
+    distance_fixture = {
+        "suite": "distance_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "distance_measures_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(distance_graph),
+            "eccentricity": [
+                {"node": str(node), "value": ecc[node]}
+                for node in distance_graph.nodes()
+            ],
+            "diameter": nx.diameter(distance_graph),
+            "radius": nx.radius(distance_graph),
+            "center": sorted(str(n) for n in nx.center(distance_graph)),
+            "periphery": sorted(str(n) for n in nx.periphery(distance_graph)),
+        },
+    }
+    write_json(
+        fixture_root / "distance_measures_strict.json", distance_fixture
+    )
+
+    # --- Average shortest path length fixture ---
+    aspl_graph = nx.Graph()
+    aspl_graph.add_edge("a", "b")
+    aspl_graph.add_edge("b", "c")
+    aspl_graph.add_edge("c", "d")
+    aspl_graph.add_edge("d", "e")
+    aspl_graph.add_edge("b", "d")
+    aspl_value = nx.average_shortest_path_length(aspl_graph)
+    aspl_fixture = {
+        "suite": "average_shortest_path_length_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "average_shortest_path_length_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(aspl_graph),
+            "average_shortest_path_length": float(aspl_value),
+        },
+    }
+    write_json(
+        fixture_root / "average_shortest_path_length_strict.json", aspl_fixture
+    )
+
+    # --- is_connected + density fixture ---
+    conn_graph = nx.Graph()
+    conn_graph.add_edge("a", "b")
+    conn_graph.add_edge("b", "c")
+    conn_graph.add_edge("c", "d")
+    conn_graph.add_edge("d", "e")
+    conn_graph.add_edge("b", "d")
+    conn_fixture = {
+        "suite": "is_connected_density_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "is_connected_query"},
+            {"op": "density_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(conn_graph),
+            "is_connected": bool(nx.is_connected(conn_graph)),
+            "density": float(nx.density(conn_graph)),
+        },
+    }
+    write_json(
+        fixture_root / "is_connected_density_strict.json", conn_fixture
+    )
+
+    # --- has_path + shortest_path_length fixture ---
+    hp_graph = nx.Graph()
+    hp_graph.add_edge("a", "b")
+    hp_graph.add_edge("b", "c")
+    hp_graph.add_edge("c", "d")
+    hp_graph.add_edge("d", "e")
+    hp_graph.add_edge("b", "d")
+    hp_graph.add_node("f")
+    hp_fixture = {
+        "suite": "has_path_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "add_node", "node": "f"},
+            {"op": "has_path_query", "source": "a", "target": "e"},
+            {"op": "shortest_path_length_query", "source": "a", "target": "e"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(hp_graph),
+            "has_path": bool(nx.has_path(hp_graph, "a", "e")),
+            "shortest_path_length": int(nx.shortest_path_length(hp_graph, "a", "e")),
+        },
+    }
+    write_json(fixture_root / "has_path_strict.json", hp_fixture)
+
+    # --- minimum spanning tree fixture ---
+    mst_graph = nx.Graph()
+    mst_graph.add_edge("a", "b", weight=5.0)
+    mst_graph.add_edge("a", "c", weight=1.0)
+    mst_graph.add_edge("b", "c", weight=3.0)
+    mst_graph.add_edge("b", "d", weight=2.0)
+    mst_graph.add_edge("c", "d", weight=4.0)
+    mst_graph.add_edge("d", "e", weight=6.0)
+    T = nx.minimum_spanning_tree(mst_graph, algorithm="kruskal")
+    mst_edges = sorted(
+        [
+            {"left": min(u, v), "right": max(u, v), "weight": float(d["weight"])}
+            for u, v, d in T.edges(data=True)
+        ],
+        key=lambda e: (e["weight"], e["left"], e["right"]),
+    )
+    mst_weight = sum(d["weight"] for u, v, d in T.edges(data=True))
+    mst_fixture = {
+        "suite": "mst_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b", "attrs": {"weight": "5"}},
+            {"op": "add_edge", "left": "a", "right": "c", "attrs": {"weight": "1"}},
+            {"op": "add_edge", "left": "b", "right": "c", "attrs": {"weight": "3"}},
+            {"op": "add_edge", "left": "b", "right": "d", "attrs": {"weight": "2"}},
+            {"op": "add_edge", "left": "c", "right": "d", "attrs": {"weight": "4"}},
+            {"op": "add_edge", "left": "d", "right": "e", "attrs": {"weight": "6"}},
+            {"op": "minimum_spanning_tree_query", "weight_attr": "weight"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(mst_graph),
+            "minimum_spanning_tree": {
+                "edges": mst_edges,
+                "total_weight": float(mst_weight),
+            },
+        },
+    }
+    write_json(fixture_root / "minimum_spanning_tree_strict.json", mst_fixture)
+
+    # --- triangles + square_clustering fixture ---
+    tri_graph = nx.Graph()
+    tri_graph.add_edge("a", "b")
+    tri_graph.add_edge("a", "c")
+    tri_graph.add_edge("b", "c")
+    tri_graph.add_edge("b", "d")
+    tri_graph.add_edge("c", "d")
+    tri_graph.add_edge("d", "e")
+    tri_counts = nx.triangles(tri_graph)
+    sq_clust = nx.square_clustering(tri_graph)
+    tri_fixture = {
+        "suite": "triangles_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "a", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "triangles_query"},
+            {"op": "square_clustering_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(tri_graph),
+            "triangles": [
+                {"node": n, "count": tri_counts[n]}
+                for n in sorted(tri_counts)
+            ],
+            "square_clustering": [
+                {"node": n, "score": float(sq_clust[n])}
+                for n in sorted(sq_clust)
+            ],
+        },
+    }
+    write_json(
+        fixture_root / "triangles_square_clustering_strict.json", tri_fixture
+    )
+
+    # --- is_tree / is_forest fixture ---
+    tree_graph = nx.Graph()
+    tree_graph.add_edge("a", "b")
+    tree_graph.add_edge("a", "c")
+    tree_graph.add_edge("b", "d")
+    tree_graph.add_edge("b", "e")
+    tree_fixture = {
+        "suite": "tree_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "a", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "add_edge", "left": "b", "right": "e"},
+            {"op": "is_tree_query"},
+            {"op": "is_forest_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(tree_graph),
+            "is_tree": bool(nx.is_tree(tree_graph)),
+            "is_forest": bool(nx.is_forest(tree_graph)),
+        },
+    }
+    write_json(fixture_root / "tree_forest_strict.json", tree_fixture)
+
+    # --- greedy coloring fixture ---
+    color_graph = nx.Graph()
+    color_graph.add_edge("a", "b")
+    color_graph.add_edge("a", "c")
+    color_graph.add_edge("b", "c")
+    color_graph.add_edge("b", "d")
+    color_graph.add_edge("c", "d")
+    color_graph.add_edge("d", "e")
+    # Greedy coloring in sorted node order
+    sorted_nodes = sorted(color_graph.nodes())
+    coloring = {}
+    for node in sorted_nodes:
+        neighbor_colors = {coloring[n] for n in color_graph.neighbors(node) if n in coloring}
+        color = 0
+        while color in neighbor_colors:
+            color += 1
+        coloring[node] = color
+    num_colors = max(coloring.values()) + 1 if coloring else 0
+    color_fixture = {
+        "suite": "coloring_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "a", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "c"},
+            {"op": "add_edge", "left": "b", "right": "d"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "d", "right": "e"},
+            {"op": "greedy_color_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(color_graph),
+            "greedy_coloring": [
+                {"node": n, "color": coloring[n]} for n in sorted_nodes
+            ],
+            "num_colors": num_colors,
+        },
+    }
+    write_json(fixture_root / "greedy_color_strict.json", color_fixture)
+
+    # --- bipartite fixture ---
+    bip_graph = nx.Graph()
+    bip_graph.add_edge("a", "b")
+    bip_graph.add_edge("a", "d")
+    bip_graph.add_edge("c", "b")
+    bip_graph.add_edge("c", "d")
+    bip_graph.add_edge("e", "b")
+    from networkx.algorithms.bipartite import is_bipartite as nx_is_bipartite
+    from networkx.algorithms.bipartite import sets as nx_bipartite_sets
+    bip_top, bip_bottom = nx_bipartite_sets(bip_graph)
+    bip_fixture = {
+        "suite": "bipartite_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b"},
+            {"op": "add_edge", "left": "a", "right": "d"},
+            {"op": "add_edge", "left": "c", "right": "b"},
+            {"op": "add_edge", "left": "c", "right": "d"},
+            {"op": "add_edge", "left": "e", "right": "b"},
+            {"op": "is_bipartite_query"},
+            {"op": "bipartite_sets_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(bip_graph),
+            "is_bipartite": bool(nx_is_bipartite(bip_graph)),
+            "bipartite_sets": {
+                "set_a": sorted(bip_top),
+                "set_b": sorted(bip_bottom),
+            },
+        },
+    }
+    write_json(fixture_root / "bipartite_strict.json", bip_fixture)
 
     oracle_capture = {
         "oracle": "legacy_networkx",
@@ -555,6 +886,16 @@ def main() -> int:
             "matching_maximal_strict.json",
             "matching_max_weight_strict.json",
             "matching_min_weight_strict.json",
+            "clustering_coefficient_strict.json",
+            "distance_measures_strict.json",
+            "average_shortest_path_length_strict.json",
+            "is_connected_density_strict.json",
+            "has_path_strict.json",
+            "minimum_spanning_tree_strict.json",
+            "triangles_square_clustering_strict.json",
+            "tree_forest_strict.json",
+            "greedy_color_strict.json",
+            "bipartite_strict.json",
         ],
         "snapshots": {
             "convert_graph": graph_snapshot(convert_graph),
@@ -569,6 +910,16 @@ def main() -> int:
             "closeness_graph": graph_snapshot(closeness_graph),
             "pagerank_graph": graph_snapshot(pagerank_graph),
             "matching_graph": graph_snapshot(matching_graph),
+            "clustering_graph": graph_snapshot(clustering_graph),
+            "distance_graph": graph_snapshot(distance_graph),
+            "aspl_graph": graph_snapshot(aspl_graph),
+            "conn_graph": graph_snapshot(conn_graph),
+            "hp_graph": graph_snapshot(hp_graph),
+            "mst_graph": graph_snapshot(mst_graph),
+            "tri_graph": graph_snapshot(tri_graph),
+            "tree_graph": graph_snapshot(tree_graph),
+            "color_graph": graph_snapshot(color_graph),
+            "bip_graph": graph_snapshot(bip_graph),
         },
     }
     write_json(artifact_root / "legacy_networkx_capture.json", oracle_capture)
