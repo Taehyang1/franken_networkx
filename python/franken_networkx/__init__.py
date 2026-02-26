@@ -552,10 +552,11 @@ def from_numpy_array(A, parallel_edges=False, create_using=None):
     for i in range(n):
         G.add_node(i)
 
-    directed = G.is_directed()
+    # Iterate the full matrix (both triangles) to match NetworkX behavior.
+    # For undirected graphs, add_edge deduplicates automatically;
+    # last-encountered weight wins for asymmetric matrices.
     for i in range(n):
-        start = 0 if directed else i
-        for j in range(start, n):
+        for j in range(n):
             val = A[i, j]
             if val != 0:
                 G.add_edge(i, j, weight=float(val))
@@ -742,14 +743,9 @@ def from_scipy_sparse_array(A, parallel_edges=False, create_using=None,
     for i in range(n):
         G.add_node(i)
 
-    directed = G.is_directed()
-    seen = set()
+    # Iterate all nonzero entries; for undirected graphs, add_edge
+    # deduplicates automatically (last-encountered weight wins).
     for i, j, v in zip(coo.row, coo.col, coo.data):
-        if not directed:
-            key = (min(i, j), max(i, j))
-            if key in seen:
-                continue
-            seen.add(key)
         kwargs = {edge_attribute: float(v)} if edge_attribute else {}
         G.add_edge(int(i), int(j), **kwargs)
 
