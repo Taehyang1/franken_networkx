@@ -3081,6 +3081,16 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
                     .iter()
                     .map(|s| (s.node.as_str(), &s.score))
                     .collect();
+                if actual.scores.len() != expected_sq.len() {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_square_clustering".to_owned(),
+                        message: format!(
+                            "square_clustering node count mismatch: expected {}, got {}",
+                            expected_sq.len(),
+                            actual.scores.len()
+                        ),
+                    });
+                }
                 for exp in expected_sq {
                     match actual_map.get(exp.node.as_str()) {
                         Some(&&actual_score) => {

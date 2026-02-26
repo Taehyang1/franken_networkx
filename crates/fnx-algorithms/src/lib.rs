@@ -3798,10 +3798,10 @@ pub fn is_tree(graph: &Graph) -> IsTreeResult {
     let n = graph.node_count();
     let m = graph.edge_count();
 
-    // Empty graph or single node is a tree
+    // Single node is a tree; empty graph (0 nodes) is not (matches NetworkX)
     if n <= 1 {
         return IsTreeResult {
-            is_tree: n == 1 || n == 0,
+            is_tree: n == 1,
             witness: ComplexityWitness {
                 algorithm: "is_tree".to_owned(),
                 complexity_claim: "O(|V| + |E|)".to_owned(),
