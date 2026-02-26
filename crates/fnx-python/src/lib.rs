@@ -6,6 +6,9 @@
 //! The public Python API is re-exported through `python/franken_networkx/__init__.py`.
 
 mod algorithms;
+pub(crate) mod digraph;
+mod generators;
+mod readwrite;
 mod views;
 
 use fnx_classes::{AttrMap, Graph};
@@ -247,7 +250,8 @@ impl PyGraph {
             }
         }
 
-        self.inner.add_node_with_attrs(canonical, rust_attrs);
+        self.inner.add_node_with_attrs(canonical.clone(), rust_attrs);
+        log::debug!(target: "franken_networkx", "add_node: {canonical}");
         Ok(())
     }
 
@@ -293,6 +297,7 @@ impl PyGraph {
                 n.repr()?
             )));
         }
+        log::debug!(target: "franken_networkx", "remove_node: {canonical}");
         self.inner.remove_node(&canonical);
         self.node_key_map.remove(&canonical);
         self.node_py_attrs.remove(&canonical);
@@ -382,6 +387,7 @@ impl PyGraph {
             }
         }
 
+        log::debug!(target: "franken_networkx", "add_edge: {u_canonical} -- {v_canonical}");
         self.inner
             .add_edge_with_attrs(u_canonical, v_canonical, rust_attrs)
             .map_err(|e| NetworkXError::new_err(e.to_string()))
@@ -395,6 +401,7 @@ impl PyGraph {
         ebunch_to_add: &Bound<'_, PyAny>,
         attr: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<()> {
+        let has_global_attr = attr.is_some_and(|a| !a.is_empty());
         let iter = PyIterator::from_object(ebunch_to_add)?;
         for item in iter {
             let item = item?;
@@ -409,17 +416,65 @@ impl PyGraph {
             }
             let u = tuple.get_item(0)?;
             let v = tuple.get_item(1)?;
-            let merged = PyDict::new(py);
-            if let Some(a) = attr {
-                merged.update(a.as_mapping())?;
-            }
-            if len == 3 {
-                let d = tuple.get_item(2)?;
-                if let Ok(d) = d.downcast::<PyDict>() {
-                    merged.update(d.as_mapping())?;
+            // Fast path: no global attrs and no per-edge attrs.
+            if !has_global_attr && len == 2 {
+                self.add_edge(py, &u, &v, None)?;
+            } else {
+                let merged = PyDict::new(py);
+                if let Some(a) = attr {
+                    merged.update(a.as_mapping())?;
                 }
+                if len == 3 {
+                    let d = tuple.get_item(2)?;
+                    if let Ok(d) = d.downcast::<PyDict>() {
+                        merged.update(d.as_mapping())?;
+                    }
+                }
+                self.add_edge(py, &u, &v, Some(&merged))?;
             }
-            self.add_edge(py, &u, &v, Some(&merged))?;
+        }
+        Ok(())
+    }
+
+    /// Fast batch edge insertion for integer-keyed graphs without attributes.
+    ///
+    /// Takes a flat list of ``[u0, v0, u1, v1, ...]`` integers and adds all
+    /// edges in a tight loop with minimal Python object overhead.
+    fn _fast_add_int_edges(&mut self, py: Python<'_>, flat: Vec<i64>) -> PyResult<()> {
+        if !flat.len().is_multiple_of(2) {
+            return Err(PyValueError::new_err(
+                "flat edge list must have even length",
+            ));
+        }
+        let empty_attrs = AttrMap::new();
+        for pair in flat.chunks_exact(2) {
+            let u = pair[0];
+            let v = pair[1];
+            let u_s = u.to_string();
+            let v_s = v.to_string();
+
+            // Insert node key maps only if new.
+            self.node_key_map
+                .entry(u_s.clone())
+                .or_insert_with(|| u.into_pyobject(py).unwrap().into_any().unbind());
+            self.node_key_map
+                .entry(v_s.clone())
+                .or_insert_with(|| v.into_pyobject(py).unwrap().into_any().unbind());
+            self.node_py_attrs
+                .entry(u_s.clone())
+                .or_insert_with(|| PyDict::new(py).unbind());
+            self.node_py_attrs
+                .entry(v_s.clone())
+                .or_insert_with(|| PyDict::new(py).unbind());
+
+            let ek = Self::edge_key(&u_s, &v_s);
+            self.edge_py_attrs
+                .entry(ek)
+                .or_insert_with(|| PyDict::new(py).unbind());
+
+            let _ = self
+                .inner
+                .add_edge_with_attrs(u_s, v_s, empty_attrs.clone());
         }
         Ok(())
     }
@@ -460,10 +515,11 @@ impl PyGraph {
     ) -> PyResult<()> {
         let u_canonical = node_key_to_string(py, u)?;
         let v_canonical = node_key_to_string(py, v)?;
+        log::debug!(target: "franken_networkx", "remove_edge: {u_canonical} -- {v_canonical}");
         let removed = self.inner.remove_edge(&u_canonical, &v_canonical);
         if !removed {
             return Err(NetworkXError::new_err(format!(
-                "The edge {}-{} is not in the graph.",
+                "The edge {}-{} is not in the graph",
                 u.repr()?,
                 v.repr()?
             )));
@@ -1054,13 +1110,19 @@ impl NodeIterator {
 /// Module initialization — entry point when ``import franken_networkx._fnx`` runs.
 #[pymodule]
 fn _fnx(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Bridge Rust log macros to Python's logging module under "franken_networkx".
+    pyo3_log::init();
+
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
     // Graph class
     m.add_class::<PyGraph>()?;
     m.add_class::<NodeIterator>()?;
 
-    // View classes
+    // DiGraph class + views
+    digraph::register_digraph_classes(m)?;
+
+    // Undirected view classes
     m.add_class::<views::NodeView>()?;
     m.add_class::<views::EdgeView>()?;
     m.add_class::<views::DegreeView>()?;
@@ -1068,6 +1130,12 @@ fn _fnx(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Algorithm functions
     algorithms::register(m)?;
+
+    // Generator functions
+    generators::register(m)?;
+
+    // Read/write functions
+    readwrite::register(m)?;
 
     // Exception hierarchy
     m.add("NetworkXError", m.py().get_type::<NetworkXError>())?;

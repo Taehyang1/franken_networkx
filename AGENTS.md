@@ -74,6 +74,60 @@ codegen-units = 1   # Single codegen unit for better optimization
 strip = true        # Remove debug symbols
 ```
 
+### Python Bindings (Maturin + PyO3)
+
+The project includes Python bindings via PyO3, built with Maturin. The native extension module is `franken_networkx._fnx`.
+
+**Prerequisites:**
+- Python 3.10+
+- `pip install maturin pytest hypothesis networkx`
+
+**Dev loop:**
+```bash
+# Build and install into current Python environment
+maturin develop --features pyo3/abi3-py310
+
+# With release optimizations (recommended for benchmarks)
+maturin develop --release --features pyo3/abi3-py310
+
+# Via rch (remote compilation + local install)
+rch exec -- maturin develop --features pyo3/abi3-py310
+```
+
+**Testing Python bindings:**
+```bash
+# Run all Python tests
+pytest tests/python/ -v --tb=long
+
+# Run specific test files
+pytest tests/python/test_conformance.py -v
+pytest tests/python/test_error_messages.py -v
+pytest tests/python/test_hypothesis.py -v
+pytest tests/python/test_thread_safety.py -v
+
+# Skip slow tests
+pytest tests/python/ -v -m "not slow"
+```
+
+**Building wheels:**
+```bash
+# Build a wheel for the current platform
+maturin build --release
+
+# Build sdist
+maturin sdist
+```
+
+**Key files:**
+| Path | Purpose |
+|------|---------|
+| `pyproject.toml` | Maturin config, Python project metadata |
+| `crates/fnx-python/` | PyO3 binding crate (lib.rs, algorithms.rs, digraph.rs, generators.rs, readwrite.rs, views.rs) |
+| `python/franken_networkx/` | Python package (\_\_init\_\_.py, backend.py, \_fnx.pyi) |
+| `tests/python/` | Python test suite (conftest.py, test\_\*.py) |
+
+**ABI3:** The `abi3-py310` feature builds a single wheel that works with Python 3.10+, so no per-version matrix is needed.
+
 ---
 
 ## Code Editing Discipline
@@ -217,8 +271,9 @@ Graph API (fnx-classes) → Graph Storage → Algorithm Modules → Analysis & S
 ```
 franken_networkx/
 ├── Cargo.toml                         # Workspace root
+├── pyproject.toml                     # Maturin/Python project config
 ├── crates/
-│   ├── fnx-classes/                   # Core graph types (Graph, DiGraph, Multi*)
+│   ├── fnx-classes/                   # Core graph types (Graph, DiGraph)
 │   ├── fnx-views/                     # Subgraph and node/edge views
 │   ├── fnx-dispatch/                  # Algorithm dispatch and routing
 │   ├── fnx-convert/                   # Graph type conversions
@@ -227,12 +282,16 @@ franken_networkx/
 │   ├── fnx-readwrite/                 # Graph I/O formats
 │   ├── fnx-durability/                # RaptorQ sidecar durability layer
 │   ├── fnx-conformance/               # Differential conformance test harness
-│   └── fnx-runtime/                   # Runtime integration facade
+│   ├── fnx-runtime/                   # Runtime integration facade
+│   └── fnx-python/                    # PyO3 Python bindings (maturin cdylib)
+├── python/
+│   └── franken_networkx/              # Python package (__init__.py, backend.py, _fnx.pyi)
+├── tests/
+│   └── python/                        # Python test suite (conftest, conformance, hypothesis, etc.)
 ├── legacy_networkx_code/              # NetworkX Python reference (behavioral oracle)
 ├── artifacts/                         # Generated conformance/benchmark artifacts
 ├── reference_specs/                   # Reference specifications
-├── scripts/                           # Development scripts
-└── tests/                             # Cross-component integration tests
+└── scripts/                           # Development scripts
 ```
 
 ### Compatibility Doctrine (Mode-Split)

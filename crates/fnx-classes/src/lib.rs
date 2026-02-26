@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod digraph;
+
 use fnx_runtime::{
     CompatibilityMode, DecisionAction, DecisionRecord, EvidenceLedger, EvidenceTerm,
     decision_theoretic_action, unix_time_ms,
@@ -168,6 +170,18 @@ impl Graph {
     #[must_use]
     pub fn evidence_ledger(&self) -> &EvidenceLedger {
         &self.ledger
+    }
+
+    /// Type identity: always `false` for undirected Graph.
+    #[must_use]
+    pub fn is_directed(&self) -> bool {
+        false
+    }
+
+    /// Type identity: always `false` for Graph (not a multigraph).
+    #[must_use]
+    pub fn is_multigraph(&self) -> bool {
+        false
     }
 
     pub fn add_node(&mut self, node: impl Into<String>) -> bool {

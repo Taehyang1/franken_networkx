@@ -1,0 +1,1015 @@
+//! Directed graph (DiGraph) storage.
+//!
+//! Mirrors the undirected [`Graph`] API with directed semantics:
+//! - Edge `(u, v)` is distinct from `(v, u)`.
+//! - Adjacency is split into **successors** (outgoing) and **predecessors** (incoming).
+//! - `neighbors(n)` returns successors (matching NetworkX convention).
+
+use crate::{AttrMap, EdgeSnapshot, GraphError};
+use fnx_runtime::{
+    CompatibilityMode, DecisionAction, DecisionRecord, EvidenceLedger, EvidenceTerm,
+    decision_theoretic_action, unix_time_ms,
+};
+use indexmap::{IndexMap, IndexSet};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+
+// ---------------------------------------------------------------------------
+// DirectedEdgeKey — order-preserving (NOT canonicalized)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DirectedEdgeKey {
+    source: String,
+    target: String,
+}
+
+impl DirectedEdgeKey {
+    fn new(source: &str, target: &str) -> Self {
+        Self {
+            source: source.to_owned(),
+            target: target.to_owned(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DiGraphSnapshot
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiGraphSnapshot {
+    pub mode: CompatibilityMode,
+    pub nodes: Vec<String>,
+    /// Edges in source→target order. `left` = source, `right` = target.
+    pub edges: Vec<EdgeSnapshot>,
+}
+
+// ---------------------------------------------------------------------------
+// DiGraph
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct DiGraph {
+    mode: CompatibilityMode,
+    revision: u64,
+    nodes: IndexMap<String, AttrMap>,
+    /// Outgoing adjacency: node → set of successors.
+    successors: IndexMap<String, IndexSet<String>>,
+    /// Incoming adjacency: node → set of predecessors.
+    predecessors: IndexMap<String, IndexSet<String>>,
+    /// Directed edges keyed by (source, target) — order matters.
+    edges: IndexMap<DirectedEdgeKey, AttrMap>,
+    ledger: EvidenceLedger,
+}
+
+impl DiGraph {
+    // -----------------------------------------------------------------------
+    // Constructors
+    // -----------------------------------------------------------------------
+
+    #[must_use]
+    pub fn new(mode: CompatibilityMode) -> Self {
+        Self {
+            mode,
+            revision: 0,
+            nodes: IndexMap::new(),
+            successors: IndexMap::new(),
+            predecessors: IndexMap::new(),
+            edges: IndexMap::new(),
+            ledger: EvidenceLedger::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn strict() -> Self {
+        Self::new(CompatibilityMode::Strict)
+    }
+
+    #[must_use]
+    pub fn hardened() -> Self {
+        Self::new(CompatibilityMode::Hardened)
+    }
+
+    // -----------------------------------------------------------------------
+    // Read-only queries
+    // -----------------------------------------------------------------------
+
+    #[must_use]
+    pub fn mode(&self) -> CompatibilityMode {
+        self.mode
+    }
+
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[must_use]
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[must_use]
+    pub fn has_node(&self, node: &str) -> bool {
+        self.nodes.contains_key(node)
+    }
+
+    /// Check for directed edge source→target.
+    #[must_use]
+    pub fn has_edge(&self, source: &str, target: &str) -> bool {
+        self.edges
+            .contains_key(&DirectedEdgeKey::new(source, target))
+    }
+
+    #[must_use]
+    pub fn nodes_ordered(&self) -> Vec<&str> {
+        self.nodes.keys().map(String::as_str).collect()
+    }
+
+    // -- Directed adjacency queries ----------------------------------------
+
+    /// Successors of `node` (outgoing neighbors). Returns `None` if node absent.
+    #[must_use]
+    pub fn successors(&self, node: &str) -> Option<Vec<&str>> {
+        self.successors
+            .get(node)
+            .map(|s| s.iter().map(String::as_str).collect())
+    }
+
+    #[must_use]
+    pub fn successors_iter(&self, node: &str) -> Option<impl Iterator<Item = &str> + '_> {
+        self.successors
+            .get(node)
+            .map(|s| s.iter().map(String::as_str))
+    }
+
+    /// Predecessors of `node` (incoming neighbors). Returns `None` if node absent.
+    #[must_use]
+    pub fn predecessors(&self, node: &str) -> Option<Vec<&str>> {
+        self.predecessors
+            .get(node)
+            .map(|p| p.iter().map(String::as_str).collect())
+    }
+
+    #[must_use]
+    pub fn predecessors_iter(&self, node: &str) -> Option<impl Iterator<Item = &str> + '_> {
+        self.predecessors
+            .get(node)
+            .map(|p| p.iter().map(String::as_str))
+    }
+
+    /// Neighbors = successors (matches NetworkX `DiGraph.neighbors()` convention).
+    #[must_use]
+    pub fn neighbors(&self, node: &str) -> Option<Vec<&str>> {
+        self.successors(node)
+    }
+
+    #[must_use]
+    pub fn neighbors_iter(&self, node: &str) -> Option<impl Iterator<Item = &str> + '_> {
+        self.successors_iter(node)
+    }
+
+    #[must_use]
+    pub fn neighbor_count(&self, node: &str) -> usize {
+        self.successors.get(node).map_or(0, IndexSet::len)
+    }
+
+    /// Out-degree: number of successors.
+    #[must_use]
+    pub fn out_degree(&self, node: &str) -> usize {
+        self.successors.get(node).map_or(0, IndexSet::len)
+    }
+
+    /// In-degree: number of predecessors.
+    #[must_use]
+    pub fn in_degree(&self, node: &str) -> usize {
+        self.predecessors.get(node).map_or(0, IndexSet::len)
+    }
+
+    /// Total degree: in_degree + out_degree.
+    #[must_use]
+    pub fn degree(&self, node: &str) -> usize {
+        self.in_degree(node) + self.out_degree(node)
+    }
+
+    /// Outgoing edges from `node` as (source, target) pairs.
+    #[must_use]
+    pub fn out_edges<'a>(&'a self, node: &'a str) -> Vec<(&'a str, &'a str)> {
+        self.successors
+            .get(node)
+            .map_or_else(Vec::new, |succs| {
+                succs
+                    .iter()
+                    .map(|t| (node, t.as_str()))
+                    .collect()
+            })
+    }
+
+    /// Incoming edges to `node` as (source, target) pairs.
+    #[must_use]
+    pub fn in_edges<'a>(&'a self, node: &'a str) -> Vec<(&'a str, &'a str)> {
+        self.predecessors
+            .get(node)
+            .map_or_else(Vec::new, |preds| {
+                preds
+                    .iter()
+                    .map(|s| (s.as_str(), node))
+                    .collect()
+            })
+    }
+
+    // -- Attribute queries -------------------------------------------------
+
+    #[must_use]
+    pub fn node_attrs(&self, node: &str) -> Option<&AttrMap> {
+        self.nodes.get(node)
+    }
+
+    /// Attributes of directed edge source→target.
+    #[must_use]
+    pub fn edge_attrs(&self, source: &str, target: &str) -> Option<&AttrMap> {
+        self.edges.get(&DirectedEdgeKey::new(source, target))
+    }
+
+    #[must_use]
+    pub fn evidence_ledger(&self) -> &EvidenceLedger {
+        &self.ledger
+    }
+
+    /// Type identity: always `true` for DiGraph.
+    #[must_use]
+    pub fn is_directed(&self) -> bool {
+        true
+    }
+
+    /// Type identity: always `false` for DiGraph (not a multigraph).
+    #[must_use]
+    pub fn is_multigraph(&self) -> bool {
+        false
+    }
+
+    // -----------------------------------------------------------------------
+    // Mutations
+    // -----------------------------------------------------------------------
+
+    pub fn add_node(&mut self, node: impl Into<String>) -> bool {
+        self.add_node_with_attrs(node, AttrMap::new())
+    }
+
+    pub fn add_node_with_attrs(&mut self, node: impl Into<String>, attrs: AttrMap) -> bool {
+        let node = node.into();
+        let existed = self.nodes.contains_key(&node);
+        let mut changed = !existed;
+        let attrs_for_change_check = attrs.clone();
+        let attrs_count = {
+            let bucket = self.nodes.entry(node.clone()).or_default();
+            if !attrs_for_change_check.is_empty()
+                && attrs_for_change_check
+                    .iter()
+                    .any(|(key, value)| bucket.get(key) != Some(value))
+            {
+                changed = true;
+            }
+            bucket.extend(attrs);
+            bucket.len()
+        };
+        self.successors.entry(node.clone()).or_default();
+        self.predecessors.entry(node.clone()).or_default();
+        if changed {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.record_decision(
+            "add_node",
+            DecisionAction::Allow,
+            0.0,
+            vec![
+                EvidenceTerm {
+                    signal: "node_preexisting".to_owned(),
+                    observed_value: existed.to_string(),
+                    log_likelihood_ratio: -3.0,
+                },
+                EvidenceTerm {
+                    signal: "attrs_count".to_owned(),
+                    observed_value: attrs_count.to_string(),
+                    log_likelihood_ratio: -1.0,
+                },
+            ],
+        );
+        !existed
+    }
+
+    pub fn add_edge(
+        &mut self,
+        source: impl Into<String>,
+        target: impl Into<String>,
+    ) -> Result<(), GraphError> {
+        self.add_edge_with_attrs(source, target, AttrMap::new())
+    }
+
+    pub fn add_edge_with_attrs(
+        &mut self,
+        source: impl Into<String>,
+        target: impl Into<String>,
+        attrs: AttrMap,
+    ) -> Result<(), GraphError> {
+        let source = source.into();
+        let target = target.into();
+
+        let unknown_feature = attrs
+            .keys()
+            .any(|key| key.starts_with("__fnx_incompatible"));
+        let self_loop = source == target;
+        let incompatibility_probability = if unknown_feature {
+            1.0
+        } else if self_loop {
+            0.22
+        } else {
+            0.08
+        };
+
+        let action =
+            decision_theoretic_action(self.mode, incompatibility_probability, unknown_feature);
+
+        if action == DecisionAction::FailClosed {
+            self.record_decision(
+                "add_edge",
+                action,
+                incompatibility_probability,
+                vec![EvidenceTerm {
+                    signal: "unknown_incompatible_feature".to_owned(),
+                    observed_value: unknown_feature.to_string(),
+                    log_likelihood_ratio: 12.0,
+                }],
+            );
+            return Err(GraphError::FailClosed {
+                operation: "add_edge",
+                reason: "incompatible edge metadata".to_owned(),
+            });
+        }
+
+        // Auto-create nodes.
+        let mut source_autocreated = false;
+        if !self.nodes.contains_key(&source) {
+            let _ = self.add_node(source.clone());
+            source_autocreated = true;
+        }
+        let mut target_autocreated = false;
+        if self_loop {
+            target_autocreated = source_autocreated;
+        } else if !self.nodes.contains_key(&target) {
+            let _ = self.add_node(target.clone());
+            target_autocreated = true;
+        }
+
+        let edge_key = DirectedEdgeKey::new(&source, &target);
+        let mut changed = !self.edges.contains_key(&edge_key);
+        let edge_attr_count = {
+            let edge_attrs = self.edges.entry(edge_key).or_default();
+            if !attrs.is_empty()
+                && attrs
+                    .iter()
+                    .any(|(key, value)| edge_attrs.get(key) != Some(value))
+            {
+                changed = true;
+            }
+            edge_attrs.extend(attrs);
+            edge_attrs.len()
+        };
+
+        // Directed adjacency: only source→target direction.
+        self.successors
+            .entry(source.clone())
+            .or_default()
+            .insert(target.clone());
+        self.predecessors
+            .entry(target.clone())
+            .or_default()
+            .insert(source.clone());
+
+        if changed {
+            self.revision = self.revision.saturating_add(1);
+        }
+
+        self.record_decision(
+            "add_edge",
+            action,
+            incompatibility_probability,
+            vec![
+                EvidenceTerm {
+                    signal: "self_loop".to_owned(),
+                    observed_value: self_loop.to_string(),
+                    log_likelihood_ratio: -0.5,
+                },
+                EvidenceTerm {
+                    signal: "edge_attr_count".to_owned(),
+                    observed_value: edge_attr_count.to_string(),
+                    log_likelihood_ratio: -2.0,
+                },
+                EvidenceTerm {
+                    signal: "source_autocreated".to_owned(),
+                    observed_value: source_autocreated.to_string(),
+                    log_likelihood_ratio: -1.25,
+                },
+                EvidenceTerm {
+                    signal: "target_autocreated".to_owned(),
+                    observed_value: target_autocreated.to_string(),
+                    log_likelihood_ratio: -1.25,
+                },
+            ],
+        );
+
+        Ok(())
+    }
+
+    /// Remove directed edge source→target. Returns `true` if it existed.
+    pub fn remove_edge(&mut self, source: &str, target: &str) -> bool {
+        let removed = self
+            .edges
+            .shift_remove(&DirectedEdgeKey::new(source, target))
+            .is_some();
+        if removed {
+            if let Some(succs) = self.successors.get_mut(source) {
+                succs.shift_remove(target);
+            }
+            if let Some(preds) = self.predecessors.get_mut(target) {
+                preds.shift_remove(source);
+            }
+            self.revision = self.revision.saturating_add(1);
+        }
+        removed
+    }
+
+    /// Remove node and all incident edges (both incoming and outgoing).
+    pub fn remove_node(&mut self, node: &str) -> bool {
+        if !self.nodes.contains_key(node) {
+            return false;
+        }
+
+        // Collect outgoing targets.
+        let out_targets: Vec<String> = self
+            .successors
+            .get(node)
+            .map_or_else(Vec::new, |s| s.iter().cloned().collect());
+        // Collect incoming sources.
+        let in_sources: Vec<String> = self
+            .predecessors
+            .get(node)
+            .map_or_else(Vec::new, |p| p.iter().cloned().collect());
+
+        // Remove outgoing edges: node → target.
+        for target in &out_targets {
+            self.edges
+                .shift_remove(&DirectedEdgeKey::new(node, target));
+            if let Some(preds) = self.predecessors.get_mut(target.as_str()) {
+                preds.shift_remove(node);
+            }
+        }
+        // Remove incoming edges: source → node.
+        for source in &in_sources {
+            self.edges
+                .shift_remove(&DirectedEdgeKey::new(source, node));
+            if let Some(succs) = self.successors.get_mut(source.as_str()) {
+                succs.shift_remove(node);
+            }
+        }
+
+        self.successors.shift_remove(node);
+        self.predecessors.shift_remove(node);
+        self.nodes.shift_remove(node);
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
+    // -----------------------------------------------------------------------
+    // Snapshot / ordered iteration
+    // -----------------------------------------------------------------------
+
+    /// Edges in deterministic order: iterate nodes in insertion order, then
+    /// each node's successors in insertion order.
+    #[must_use]
+    pub fn edges_ordered(&self) -> Vec<EdgeSnapshot> {
+        let mut ordered = Vec::with_capacity(self.edges.len());
+        let mut seen = HashSet::<DirectedEdgeKey>::with_capacity(self.edges.len());
+
+        for node in self.nodes.keys() {
+            if let Some(succs) = self.successors.get(node) {
+                for target in succs {
+                    let key = DirectedEdgeKey::new(node, target);
+                    if !seen.insert(key.clone()) {
+                        continue;
+                    }
+                    if let Some(attrs) = self.edges.get(&key) {
+                        ordered.push(EdgeSnapshot {
+                            left: node.clone(),
+                            right: target.clone(),
+                            attrs: attrs.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback: any edges not captured via adjacency iteration.
+        if ordered.len() < self.edges.len() {
+            for (key, attrs) in &self.edges {
+                let dk = DirectedEdgeKey::new(&key.source, &key.target);
+                if seen.insert(dk) {
+                    ordered.push(EdgeSnapshot {
+                        left: key.source.clone(),
+                        right: key.target.clone(),
+                        attrs: attrs.clone(),
+                    });
+                }
+            }
+        }
+
+        ordered
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> DiGraphSnapshot {
+        DiGraphSnapshot {
+            mode: self.mode,
+            nodes: self.nodes.keys().cloned().collect(),
+            edges: self.edges_ordered(),
+        }
+    }
+
+    /// Convert to an undirected Graph by dropping directionality.
+    /// Both (u→v) and (v→u) merge into a single undirected edge.
+    /// When both exist, the latter's attributes overwrite the former's.
+    #[must_use]
+    pub fn to_undirected(&self) -> crate::Graph {
+        let mut g = crate::Graph::new(self.mode);
+        for (node, attrs) in &self.nodes {
+            g.add_node_with_attrs(node.clone(), attrs.clone());
+        }
+        for (key, attrs) in &self.edges {
+            let _ = g.add_edge_with_attrs(key.source.clone(), key.target.clone(), attrs.clone());
+        }
+        g
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal
+    // -----------------------------------------------------------------------
+
+    fn record_decision(
+        &mut self,
+        operation: &'static str,
+        action: DecisionAction,
+        incompatibility_probability: f64,
+        evidence: Vec<EvidenceTerm>,
+    ) {
+        self.ledger.record(DecisionRecord {
+            ts_unix_ms: unix_time_ms(),
+            operation: operation.to_owned(),
+            mode: self.mode,
+            action,
+            incompatibility_probability,
+            rationale: "argmin expected loss over {allow,full_validate,fail_closed}".to_owned(),
+            evidence,
+        });
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fnx_runtime::{CompatibilityMode, DecisionAction};
+    use proptest::prelude::*;
+
+    fn node_name(id: u8) -> String {
+        format!("n{}", id % 8)
+    }
+
+    // -- Invariant checker --------------------------------------------------
+
+    fn assert_digraph_core_invariants(g: &DiGraph) {
+        // Every edge in the edge map must be reflected in successors/predecessors.
+        for (key, _attrs) in &g.edges {
+            assert!(
+                g.has_node(&key.source),
+                "edge source {} should be a node",
+                key.source
+            );
+            assert!(
+                g.has_node(&key.target),
+                "edge target {} should be a node",
+                key.target
+            );
+            let succs = g
+                .successors(&key.source)
+                .expect("source should have successors bucket");
+            assert!(
+                succs.contains(&key.target.as_str()),
+                "{} should be in successors of {}",
+                key.target,
+                key.source
+            );
+            let preds = g
+                .predecessors(&key.target)
+                .expect("target should have predecessors bucket");
+            assert!(
+                preds.contains(&key.source.as_str()),
+                "{} should be in predecessors of {}",
+                key.source,
+                key.target
+            );
+        }
+
+        // Every successor entry should have a corresponding edge.
+        let mut edge_count_from_adj = 0usize;
+        for node in g.nodes_ordered() {
+            let succs = g
+                .successors(node)
+                .expect("node should have successors bucket");
+            for s in &succs {
+                assert!(
+                    g.has_edge(node, s),
+                    "successor {} of {} should have directed edge",
+                    s,
+                    node
+                );
+                edge_count_from_adj += 1;
+            }
+            // Every predecessor entry should have a corresponding edge.
+            let preds = g
+                .predecessors(node)
+                .expect("node should have predecessors bucket");
+            for p in &preds {
+                assert!(
+                    g.has_edge(p, node),
+                    "predecessor {} of {} should have directed edge",
+                    p,
+                    node
+                );
+            }
+        }
+        assert_eq!(g.edge_count(), edge_count_from_adj);
+    }
+
+    fn assert_decision_record_schema(record: &DecisionRecord, expected_mode: CompatibilityMode) {
+        assert!(record.ts_unix_ms > 0);
+        assert!(!record.operation.trim().is_empty());
+        assert_eq!(record.mode, expected_mode);
+        assert!((0.0..=1.0).contains(&record.incompatibility_probability));
+        assert!(!record.rationale.trim().is_empty());
+        assert!(!record.evidence.is_empty());
+        for term in &record.evidence {
+            assert!(!term.signal.trim().is_empty());
+            assert!(!term.observed_value.trim().is_empty());
+        }
+    }
+
+    // -- Basic operations ---------------------------------------------------
+
+    #[test]
+    fn add_directed_edge_autocreates_nodes() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+
+        assert_eq!(g.node_count(), 2);
+        assert_eq!(g.edge_count(), 1);
+        assert!(g.has_edge("a", "b"));
+        assert!(!g.has_edge("b", "a")); // directed: reverse does NOT exist
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn directed_edge_asymmetry() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("b", "a").unwrap();
+
+        assert_eq!(g.edge_count(), 2);
+        assert!(g.has_edge("a", "b"));
+        assert!(g.has_edge("b", "a"));
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn successors_and_predecessors() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("a", "c").unwrap();
+        g.add_edge("d", "a").unwrap();
+
+        assert_eq!(g.successors("a"), Some(vec!["b", "c"]));
+        assert_eq!(g.predecessors("a"), Some(vec!["d"]));
+        assert_eq!(g.out_degree("a"), 2);
+        assert_eq!(g.in_degree("a"), 1);
+        assert_eq!(g.degree("a"), 3);
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn neighbors_returns_successors() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("c", "a").unwrap();
+
+        // neighbors() = successors() per NetworkX convention
+        assert_eq!(g.neighbors("a"), Some(vec!["b"]));
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn in_edges_and_out_edges() {
+        let mut g = DiGraph::strict();
+        g.add_edge("x", "y").unwrap();
+        g.add_edge("z", "y").unwrap();
+        g.add_edge("y", "w").unwrap();
+
+        assert_eq!(g.out_edges("y"), vec![("y", "w")]);
+        assert_eq!(g.in_edges("y"), vec![("x", "y"), ("z", "y")]);
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn remove_directed_edge() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("b", "a").unwrap();
+
+        assert!(g.remove_edge("a", "b"));
+        assert!(!g.has_edge("a", "b"));
+        assert!(g.has_edge("b", "a")); // reverse still exists
+        assert_eq!(g.edge_count(), 1);
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn remove_node_removes_all_incident_directed_edges() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("b", "c").unwrap();
+        g.add_edge("c", "a").unwrap();
+        g.add_edge("d", "b").unwrap();
+
+        assert!(g.remove_node("b"));
+        assert_eq!(g.node_count(), 3);
+        assert!(!g.has_edge("a", "b"));
+        assert!(!g.has_edge("b", "c"));
+        assert!(!g.has_edge("d", "b"));
+        assert!(g.has_edge("c", "a")); // not incident to b
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn self_loop_directed() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "a").unwrap();
+
+        assert_eq!(g.edge_count(), 1);
+        assert!(g.has_edge("a", "a"));
+        assert_eq!(g.out_degree("a"), 1);
+        assert_eq!(g.in_degree("a"), 1);
+        assert_digraph_core_invariants(&g);
+    }
+
+    #[test]
+    fn edge_attrs_directed() {
+        let mut g = DiGraph::strict();
+        let mut attrs = AttrMap::new();
+        attrs.insert("weight".to_owned(), "5".to_owned());
+        g.add_edge_with_attrs("a", "b", attrs).unwrap();
+
+        assert_eq!(
+            g.edge_attrs("a", "b").unwrap().get("weight"),
+            Some(&"5".to_owned())
+        );
+        assert!(g.edge_attrs("b", "a").is_none()); // reverse has no attrs
+    }
+
+    #[test]
+    fn repeated_edge_merges_attrs() {
+        let mut g = DiGraph::strict();
+        let mut first = AttrMap::new();
+        first.insert("weight".to_owned(), "1".to_owned());
+        g.add_edge_with_attrs("a", "b", first).unwrap();
+
+        let mut second = AttrMap::new();
+        second.insert("color".to_owned(), "red".to_owned());
+        g.add_edge_with_attrs("a", "b", second).unwrap();
+
+        assert_eq!(g.edge_count(), 1);
+        let attrs = g.edge_attrs("a", "b").unwrap();
+        assert_eq!(attrs.get("weight"), Some(&"1".to_owned()));
+        assert_eq!(attrs.get("color"), Some(&"red".to_owned()));
+    }
+
+    #[test]
+    fn edges_ordered_preserves_direction() {
+        let mut g = DiGraph::strict();
+        g.add_edge("b", "a").unwrap();
+        g.add_edge("a", "c").unwrap();
+
+        let pairs: Vec<(String, String)> = g
+            .edges_ordered()
+            .into_iter()
+            .map(|e| (e.left, e.right))
+            .collect();
+        // b was added first as source, so b→a first, then a→c
+        assert_eq!(
+            pairs,
+            vec![
+                ("b".to_owned(), "a".to_owned()),
+                ("a".to_owned(), "c".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn type_identity() {
+        let g = DiGraph::strict();
+        assert!(g.is_directed());
+        assert!(!g.is_multigraph());
+    }
+
+    #[test]
+    fn to_undirected_merges_edges() {
+        let mut g = DiGraph::strict();
+        g.add_edge("a", "b").unwrap();
+        g.add_edge("b", "a").unwrap();
+        g.add_edge("b", "c").unwrap();
+
+        let ug = g.to_undirected();
+        assert_eq!(ug.node_count(), 3);
+        assert_eq!(ug.edge_count(), 2); // (a,b) merged, plus (b,c)
+        assert!(ug.has_edge("a", "b"));
+        assert!(ug.has_edge("b", "a")); // undirected: same edge
+        assert!(ug.has_edge("b", "c"));
+    }
+
+    #[test]
+    fn snapshot_roundtrip() {
+        let mut g = DiGraph::strict();
+        let mut attrs = AttrMap::new();
+        attrs.insert("weight".to_owned(), "3".to_owned());
+        g.add_edge_with_attrs("a", "b", attrs).unwrap();
+        g.add_edge("b", "c").unwrap();
+        g.add_edge("c", "a").unwrap();
+
+        let snap = g.snapshot();
+        let mut replayed = DiGraph::new(snap.mode);
+        for node in &snap.nodes {
+            let _ = replayed.add_node(node.clone());
+        }
+        for edge in &snap.edges {
+            replayed
+                .add_edge_with_attrs(edge.left.clone(), edge.right.clone(), edge.attrs.clone())
+                .unwrap();
+        }
+
+        assert_eq!(replayed.snapshot(), snap);
+        assert_digraph_core_invariants(&replayed);
+    }
+
+    #[test]
+    fn strict_mode_fails_closed_for_incompatible_attrs() {
+        let mut g = DiGraph::strict();
+        let mut attrs = AttrMap::new();
+        attrs.insert("__fnx_incompatible_decoder".to_owned(), "v2".to_owned());
+        let err = g
+            .add_edge_with_attrs("a", "b", attrs)
+            .expect_err("strict mode should fail closed");
+
+        assert_eq!(
+            err,
+            GraphError::FailClosed {
+                operation: "add_edge",
+                reason: "incompatible edge metadata".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn revision_increments_on_mutations() {
+        let mut g = DiGraph::strict();
+        let r0 = g.revision();
+        let _ = g.add_node("a");
+        let r1 = g.revision();
+        assert!(r1 > r0);
+
+        g.add_edge("a", "b").unwrap();
+        let r2 = g.revision();
+        assert!(r2 > r1);
+
+        let _ = g.remove_edge("a", "b");
+        let r3 = g.revision();
+        assert!(r3 > r2);
+    }
+
+    #[test]
+    fn hardened_self_loop_records_full_validate() {
+        let mut g = DiGraph::hardened();
+        g.add_edge("loop", "loop").unwrap();
+
+        let record = g
+            .evidence_ledger()
+            .records()
+            .iter()
+            .rev()
+            .find(|r| r.operation == "add_edge")
+            .expect("add_edge should emit ledger row");
+        assert_decision_record_schema(record, CompatibilityMode::Hardened);
+        assert_eq!(record.action, DecisionAction::FullValidate);
+    }
+
+    // -- Proptest -----------------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn prop_digraph_invariants_under_mixed_mutations(
+            ops in prop::collection::vec((0_u8..8, 0_u8..8, any::<bool>()), 1..80),
+        ) {
+            let mut g = DiGraph::strict();
+            let mut last_rev = g.revision();
+
+            for (src_id, tgt_id, is_add) in ops {
+                let src = node_name(src_id);
+                let tgt = node_name(tgt_id);
+                if is_add {
+                    prop_assert!(g.add_edge(src, tgt).is_ok());
+                } else {
+                    let _ = g.remove_edge(&src, &tgt);
+                }
+                let rev = g.revision();
+                prop_assert!(rev >= last_rev);
+                last_rev = rev;
+                assert_digraph_core_invariants(&g);
+            }
+        }
+
+        #[test]
+        fn prop_digraph_snapshot_deterministic(
+            ops in prop::collection::vec((0_u8..8, 0_u8..8, 0_u8..3), 0..64),
+        ) {
+            let mut g1 = DiGraph::hardened();
+            let mut g2 = DiGraph::hardened();
+
+            for (src_id, tgt_id, attrs_variant) in ops {
+                let src = node_name(src_id);
+                let tgt = node_name(tgt_id);
+                let mut attrs = AttrMap::new();
+                if attrs_variant == 1 {
+                    attrs.insert("weight".to_owned(), (src_id % 5).to_string());
+                } else if attrs_variant == 2 {
+                    attrs.insert("tag".to_owned(), format!("k{}", tgt_id % 4));
+                }
+                prop_assert!(g1.add_edge_with_attrs(src.clone(), tgt.clone(), attrs.clone()).is_ok());
+                prop_assert!(g2.add_edge_with_attrs(src, tgt, attrs).is_ok());
+            }
+
+            prop_assert_eq!(g1.snapshot(), g2.snapshot());
+        }
+
+        #[test]
+        fn prop_remove_node_clears_all_directed_edges(
+            ops in prop::collection::vec((0_u8..8, 0_u8..8), 1..64),
+            target_id in 0_u8..8,
+        ) {
+            let mut g = DiGraph::strict();
+            for (src_id, tgt_id) in ops {
+                prop_assert!(g.add_edge(node_name(src_id), node_name(tgt_id)).is_ok());
+            }
+
+            let target = node_name(target_id);
+            let removed = g.remove_node(&target);
+            if removed {
+                prop_assert!(!g.has_node(&target));
+                for node in g.nodes_ordered() {
+                    prop_assert!(!g.has_edge(node, &target));
+                    prop_assert!(!g.has_edge(&target, node));
+                }
+            }
+            assert_digraph_core_invariants(&g);
+        }
+
+        #[test]
+        fn prop_directed_edge_count_equals_successor_sum(
+            ops in prop::collection::vec((0_u8..8, 0_u8..8), 1..64),
+        ) {
+            let mut g = DiGraph::strict();
+            for (src_id, tgt_id) in ops {
+                prop_assert!(g.add_edge(node_name(src_id), node_name(tgt_id)).is_ok());
+            }
+
+            let total_out: usize = g.nodes_ordered().iter().map(|n| g.out_degree(n)).sum();
+            let total_in: usize = g.nodes_ordered().iter().map(|n| g.in_degree(n)).sum();
+            prop_assert_eq!(g.edge_count(), total_out);
+            prop_assert_eq!(g.edge_count(), total_in);
+        }
+    }
+}

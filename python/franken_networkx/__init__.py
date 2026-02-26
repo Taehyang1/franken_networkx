@@ -18,8 +18,47 @@ Or as a NetworkX backend (zero code changes required)::
 
 from franken_networkx._fnx import __version__
 
-# Core graph class
+# Core graph classes
 from franken_networkx._fnx import Graph
+from franken_networkx._fnx import DiGraph
+
+
+class MultiGraph:
+    """Stub for MultiGraph — not yet supported.
+
+    Raises ``NotImplementedError`` on instantiation with a clear message.
+    """
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "MultiGraph is not yet supported by FrankenNetworkX. "
+            "Use Graph for undirected simple graphs."
+        )
+
+    def is_multigraph(self):
+        return True
+
+    def is_directed(self):
+        return False
+
+
+class MultiDiGraph:
+    """Stub for MultiDiGraph — not yet supported.
+
+    Raises ``NotImplementedError`` on instantiation with a clear message.
+    """
+
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError(
+            "MultiDiGraph is not yet supported by FrankenNetworkX. "
+            "Use DiGraph for directed simple graphs."
+        )
+
+    def is_multigraph(self):
+        return True
+
+    def is_directed(self):
+        return True
 
 # Exception hierarchy
 from franken_networkx._fnx import (
@@ -141,10 +180,604 @@ from franken_networkx._fnx import (
     local_efficiency,
 )
 
+# Graph generators — classic
+from franken_networkx._fnx import (
+    complete_graph,
+    cycle_graph,
+    empty_graph,
+    path_graph,
+    star_graph,
+)
+
+# Graph generators — random
+from franken_networkx._fnx import gnp_random_graph
+
+# Read/write — graph I/O
+from franken_networkx._fnx import (
+    node_link_data,
+    node_link_graph,
+    read_adjlist,
+    read_edgelist,
+    read_graphml,
+    write_adjlist,
+    write_edgelist,
+    write_graphml,
+)
+
+
+# Drawing — thin delegation to NetworkX/matplotlib (lazy import)
+from franken_networkx.drawing import (
+    draw,
+    draw_circular,
+    draw_kamada_kawai,
+    draw_planar,
+    draw_random,
+    draw_shell,
+    draw_spectral,
+    draw_spring,
+    circular_layout,
+    kamada_kawai_layout,
+    planar_layout,
+    random_layout,
+    shell_layout,
+    spectral_layout,
+    spring_layout,
+)
+
+
+# ---------------------------------------------------------------------------
+# Pure-Python utilities
+# ---------------------------------------------------------------------------
+
+def relabel_nodes(G, mapping, copy=True):
+    """Relabel the nodes of the graph G.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    mapping : dict or callable
+        Either a dictionary mapping old labels to new labels, or a callable
+        that takes a node and returns a new label.
+    copy : bool, optional (default=True)
+        If True, return a new graph. If False, relabel in place.
+
+    Returns
+    -------
+    H : Graph or DiGraph
+        The relabeled graph. If ``copy=False``, this is the same object as G.
+    """
+    if callable(mapping) and not isinstance(mapping, dict):
+        _mapping = {n: mapping(n) for n in G.nodes()}
+    else:
+        _mapping = mapping
+
+    if copy:
+        H = G.__class__()
+    else:
+        # Build a fresh graph and swap contents
+        H = G.__class__()
+
+    # Add nodes with their attributes under new labels
+    for old_node in G.nodes():
+        new_node = _mapping.get(old_node, old_node)
+        attrs = G.nodes[old_node] if hasattr(G.nodes, '__getitem__') else {}
+        H.add_node(new_node, **attrs)
+
+    # Add edges with their attributes under new labels
+    for u, v, data in G.edges(data=True):
+        new_u = _mapping.get(u, u)
+        new_v = _mapping.get(v, v)
+        H.add_edge(new_u, new_v, **data)
+
+    if not copy:
+        # Replace G's internals with H's
+        G.clear()
+        for n in H.nodes():
+            attrs = H.nodes[n] if hasattr(H.nodes, '__getitem__') else {}
+            G.add_node(n, **attrs)
+        for u, v, data in H.edges(data=True):
+            G.add_edge(u, v, **data)
+        return G
+
+    return H
+
+
+def to_dict_of_lists(G, nodelist=None):
+    """Return adjacency representation as a dictionary of lists.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    nodelist : list, optional
+        Use only nodes in *nodelist*. Default: all nodes.
+
+    Returns
+    -------
+    d : dict
+        ``d[u]`` is the list of neighbors of node u.
+    """
+    if nodelist is None:
+        nodelist = list(G.nodes())
+    nodeset = set(nodelist)
+    return {n: [nb for nb in G.neighbors(n) if nb in nodeset] for n in nodelist}
+
+
+def from_dict_of_lists(d, create_using=None):
+    """Return a graph from a dictionary of lists.
+
+    Parameters
+    ----------
+    d : dict of lists
+        ``d[u]`` is the list of neighbors of node u.
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+    """
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    for node, neighbors in d.items():
+        G.add_node(node)
+        for nb in neighbors:
+            G.add_edge(node, nb)
+    return G
+
+
+def to_edgelist(G, nodelist=None):
+    """Return a list of edges in the graph.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    nodelist : list, optional
+        Use only edges with both endpoints in *nodelist*.
+
+    Returns
+    -------
+    edges : list of tuples
+        Each element is ``(u, v, data_dict)``.
+    """
+    if nodelist is not None:
+        nodeset = set(nodelist)
+        return [(u, v, d) for u, v, d in G.edges(data=True)
+                if u in nodeset and v in nodeset]
+    return list(G.edges(data=True))
+
+
+def convert_node_labels_to_integers(G, first_label=0, ordering='default',
+                                     label_attribute=None):
+    """Return a copy of G with nodes relabeled as consecutive integers.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    first_label : int, optional
+        Starting integer label. Default ``0``.
+    ordering : str, optional
+        Node ordering strategy. Default ``'default'`` (uses ``G.nodes()``
+        iteration order).
+    label_attribute : str or None, optional
+        If given, store old label under this node attribute name.
+
+    Returns
+    -------
+    H : Graph or DiGraph
+        A new graph with integer node labels.
+    """
+    nodes = list(G.nodes())
+    if ordering == 'sorted':
+        nodes = sorted(nodes, key=str)
+    elif ordering == 'increasing degree':
+        nodes = sorted(nodes, key=lambda n: G.degree[n])
+    elif ordering == 'decreasing degree':
+        nodes = sorted(nodes, key=lambda n: G.degree[n], reverse=True)
+
+    mapping = {old: first_label + i for i, old in enumerate(nodes)}
+    H = relabel_nodes(G, mapping)
+
+    if label_attribute is not None:
+        for old, new in mapping.items():
+            H.nodes[new][label_attribute] = old
+
+    return H
+
+
+def to_pandas_edgelist(G, source='source', target='target', nodelist=None,
+                       dtype=None, edge_key=None):
+    """Return the graph edge list as a Pandas DataFrame.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    source : str, optional
+        Column name for source nodes. Default ``'source'``.
+    target : str, optional
+        Column name for target nodes. Default ``'target'``.
+    nodelist : list, optional
+        Use only edges with both endpoints in *nodelist*.
+    dtype : dict, optional
+        Column dtypes passed to DataFrame constructor.
+    edge_key : str, optional
+        Ignored (multigraphs not yet supported).
+
+    Returns
+    -------
+    df : pandas.DataFrame
+    """
+    import pandas as pd
+
+    edgelist = to_edgelist(G, nodelist=nodelist)
+    rows = []
+    for u, v, d in edgelist:
+        row = {source: u, target: v}
+        row.update(d)
+        rows.append(row)
+    return pd.DataFrame(rows, dtype=dtype)
+
+
+def from_pandas_edgelist(df, source='source', target='target', edge_attr=None,
+                         create_using=None):
+    """Return a graph from a Pandas DataFrame of edges.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame with at least two columns for source and target nodes.
+    source : str, optional
+        Column name for source nodes. Default ``'source'``.
+    target : str, optional
+        Column name for target nodes. Default ``'target'``.
+    edge_attr : str, list of str, True, or None, optional
+        Edge attributes to include. ``True`` means all columns except source
+        and target. ``None`` means no attributes.
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+    """
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    if edge_attr is True:
+        attr_cols = [c for c in df.columns if c not in (source, target)]
+    elif isinstance(edge_attr, str):
+        attr_cols = [edge_attr]
+    elif isinstance(edge_attr, (list, tuple)):
+        attr_cols = list(edge_attr)
+    else:
+        attr_cols = []
+
+    for _, row in df.iterrows():
+        u, v = row[source], row[target]
+        attrs = {col: row[col] for col in attr_cols if col in row.index}
+        G.add_edge(u, v, **attrs)
+
+    return G
+
+
+def to_numpy_array(G, nodelist=None, dtype=None, order=None,
+                   multigraph_weight=sum, weight='weight', nonedge=0.0):
+    """Return the adjacency matrix of G as a NumPy array.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    nodelist : list, optional
+        Rows and columns are ordered according to the nodes in *nodelist*.
+        If ``None``, the ordering is produced by ``G.nodes()``.
+    dtype : NumPy dtype, optional
+        The NumPy data type of the array. Default ``numpy.float64``.
+    order : {'C', 'F'}, optional
+        Memory layout passed to ``numpy.full``.
+    multigraph_weight : callable, optional
+        Ignored (multigraphs not yet supported). Present for API compat.
+    weight : str or None, optional
+        Edge attribute key used as weight. If ``None``, every edge has
+        weight 1. Default ``'weight'``.
+    nonedge : float, optional
+        Value used for non-edges. Default ``0.0``.
+
+    Returns
+    -------
+    A : numpy.ndarray
+        Adjacency matrix as a 2-D NumPy array.
+    """
+    import numpy as np
+
+    if nodelist is None:
+        nodelist = list(G.nodes())
+
+    n = len(nodelist)
+    index = {node: i for i, node in enumerate(nodelist)}
+
+    if dtype is None:
+        dtype = np.float64
+
+    A = np.full((n, n), nonedge, dtype=dtype, order=order)
+
+    for u, v, data in G.edges(data=True):
+        if u in index and v in index:
+            i, j = index[u], index[v]
+            if weight is None:
+                w = 1
+            else:
+                w = data.get(weight, 1)
+            A[i, j] = w
+            if not G.is_directed():
+                A[j, i] = w
+
+    return A
+
+
+def from_numpy_array(A, parallel_edges=False, create_using=None):
+    """Return a graph from a 2-D NumPy adjacency matrix.
+
+    Parameters
+    ----------
+    A : numpy.ndarray
+        A 2-D NumPy array interpreted as an adjacency matrix.
+    parallel_edges : bool, optional
+        Ignored (multigraphs not yet supported). Present for API compat.
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+        The constructed graph.
+    """
+    import numpy as np
+
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    n = A.shape[0]
+    for i in range(n):
+        G.add_node(i)
+
+    directed = G.is_directed()
+    for i in range(n):
+        start = 0 if directed else i
+        for j in range(start, n):
+            val = A[i, j]
+            if val != 0:
+                G.add_edge(i, j, weight=float(val))
+
+    return G
+
+
+def from_dict_of_dicts(d, create_using=None, multigraph_input=False):
+    """Return a graph from a dictionary of dictionaries.
+
+    Parameters
+    ----------
+    d : dict of dicts
+        Adjacency representation. ``d[u][v]`` gives the edge data dict for
+        edge (u, v).
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+    multigraph_input : bool, optional
+        Ignored (multigraphs not yet supported). Present for API compat.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+    """
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    for u, nbrs in d.items():
+        for v, data in nbrs.items():
+            if isinstance(data, dict):
+                G.add_edge(u, v, **data)
+            else:
+                G.add_edge(u, v)
+
+    return G
+
+
+def from_edgelist(edgelist, create_using=None):
+    """Return a graph from a list of edges.
+
+    Parameters
+    ----------
+    edgelist : iterable
+        Each element is a tuple (u, v) or (u, v, d) where d is a dict of
+        edge attributes.
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+    """
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    G.add_edges_from(edgelist)
+    return G
+
+
+def to_dict_of_dicts(G, nodelist=None, edge_data=None):
+    """Return adjacency representation as a dictionary of dictionaries.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    nodelist : list, optional
+        Use only nodes in *nodelist*. Default: all nodes.
+    edge_data : object, optional
+        If provided, use this as the edge data instead of the edge
+        attribute dict.
+
+    Returns
+    -------
+    d : dict
+        ``d[u][v]`` is the edge data for (u, v).
+    """
+    if nodelist is None:
+        nodelist = list(G.nodes())
+    nodeset = set(nodelist)
+
+    d = {}
+    for u in nodelist:
+        d[u] = {}
+        for v, data in G[u].items():
+            if v in nodeset:
+                if edge_data is not None:
+                    d[u][v] = edge_data
+                else:
+                    d[u][v] = dict(data) if hasattr(data, 'items') else data
+    return d
+
+
+def to_scipy_sparse_array(G, nodelist=None, dtype=None, weight='weight',
+                          format='csr'):
+    """Return the adjacency matrix of G as a SciPy sparse array.
+
+    Parameters
+    ----------
+    G : Graph or DiGraph
+        The input graph.
+    nodelist : list, optional
+        Rows and columns are ordered according to *nodelist*.
+        If ``None``, the ordering is produced by ``G.nodes()``.
+    dtype : NumPy dtype, optional
+        Data type of the matrix entries. Default ``numpy.float64``.
+    weight : str or None, optional
+        Edge attribute key used as weight. ``None`` means weight 1.
+        Default ``'weight'``.
+    format : {'csr', 'csc', 'coo', 'lil', 'dok', 'bsr'}, optional
+        Sparse matrix format. Default ``'csr'``.
+
+    Returns
+    -------
+    A : scipy.sparse array
+        Adjacency matrix in the requested sparse format.
+    """
+    import numpy as np
+    import scipy.sparse
+
+    if nodelist is None:
+        nodelist = list(G.nodes())
+
+    n = len(nodelist)
+    index = {node: i for i, node in enumerate(nodelist)}
+
+    if dtype is None:
+        dtype = np.float64
+
+    row, col, data = [], [], []
+    for u, v, d in G.edges(data=True):
+        if u in index and v in index:
+            i, j = index[u], index[v]
+            w = 1 if weight is None else d.get(weight, 1)
+            row.append(i)
+            col.append(j)
+            data.append(w)
+            if not G.is_directed():
+                row.append(j)
+                col.append(i)
+                data.append(w)
+
+    A = scipy.sparse.coo_array(
+        (np.array(data, dtype=dtype), (np.array(row), np.array(col))),
+        shape=(n, n),
+    )
+    return A.asformat(format)
+
+
+def from_scipy_sparse_array(A, parallel_edges=False, create_using=None,
+                            edge_attribute='weight'):
+    """Return a graph from a SciPy sparse array.
+
+    Parameters
+    ----------
+    A : scipy.sparse array or matrix
+        An adjacency matrix representation of a graph.
+    parallel_edges : bool, optional
+        Ignored (multigraphs not yet supported). Present for API compat.
+    create_using : Graph constructor, optional
+        Graph type to create. Default ``Graph()``.
+    edge_attribute : str, optional
+        Name of the edge attribute to set from matrix values.
+        Default ``'weight'``.
+
+    Returns
+    -------
+    G : Graph or DiGraph
+        The constructed graph.
+    """
+    import scipy.sparse
+
+    if create_using is not None:
+        G = create_using
+    else:
+        G = Graph()
+
+    coo = scipy.sparse.coo_array(A)
+    n = coo.shape[0]
+    for i in range(n):
+        G.add_node(i)
+
+    directed = G.is_directed()
+    seen = set()
+    for i, j, v in zip(coo.row, coo.col, coo.data):
+        if not directed:
+            key = (min(i, j), max(i, j))
+            if key in seen:
+                continue
+            seen.add(key)
+        kwargs = {edge_attribute: float(v)} if edge_attribute else {}
+        G.add_edge(int(i), int(j), **kwargs)
+
+    return G
+
+
 __all__ = [
     "__version__",
     # Graph classes
     "Graph",
+    "DiGraph",
+    "MultiGraph",
+    "MultiDiGraph",
+    # Utilities
+    "relabel_nodes",
+    "to_numpy_array",
+    "from_numpy_array",
+    "to_scipy_sparse_array",
+    "from_scipy_sparse_array",
+    "from_dict_of_dicts",
+    "from_dict_of_lists",
+    "from_edgelist",
+    "from_pandas_edgelist",
+    "to_dict_of_dicts",
+    "to_dict_of_lists",
+    "to_edgelist",
+    "to_pandas_edgelist",
+    "convert_node_labels_to_integers",
     # Exceptions
     "HasACycle",
     "NetworkXAlgorithmError",
@@ -229,4 +862,37 @@ __all__ = [
     # Algorithms — efficiency
     "global_efficiency",
     "local_efficiency",
+    # Generators — classic
+    "complete_graph",
+    "cycle_graph",
+    "empty_graph",
+    "path_graph",
+    "star_graph",
+    # Generators — random
+    "gnp_random_graph",
+    # Read/write — graph I/O
+    "node_link_data",
+    "node_link_graph",
+    "read_adjlist",
+    "read_edgelist",
+    "read_graphml",
+    "write_adjlist",
+    "write_edgelist",
+    "write_graphml",
+    # Drawing
+    "draw",
+    "draw_circular",
+    "draw_kamada_kawai",
+    "draw_planar",
+    "draw_random",
+    "draw_shell",
+    "draw_spectral",
+    "draw_spring",
+    "circular_layout",
+    "kamada_kawai_layout",
+    "planar_layout",
+    "random_layout",
+    "shell_layout",
+    "spectral_layout",
+    "spring_layout",
 ]

@@ -1,421 +1,119 @@
 //! Python bindings for FrankenNetworkX algorithms.
 //!
-//! Each function follows the NetworkX API signature, accepts a `PyGraph`,
+//! Each function follows the NetworkX API signature, accepts a `Graph` or `DiGraph`,
 //! delegates to the Rust implementation in `fnx_algorithms`, and returns
 //! Python-native types (lists, dicts, floats, bools).
 
+use crate::digraph::PyDiGraph;
 use crate::{NetworkXError, NetworkXNoPath, NodeNotFound, PyGraph, node_key_to_string};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
-// shortest_path
+// GraphRef — unified graph access for algorithms accepting both Graph & DiGraph
 // ---------------------------------------------------------------------------
 
-/// Return the shortest path between source and target.
+/// Unified graph reference for algorithm bindings that accept both Graph and DiGraph.
 ///
-/// Parameters
-/// ----------
-/// G : Graph
-///     The graph to search.
-/// source : node, optional
-///     Starting node. If None and target is None, return dict of dicts.
-/// target : node, optional
-///     Ending node.
-/// weight : str or None, optional
-///     Edge attribute to use as weight. None means unweighted (BFS).
-/// method : str, optional
-///     Algorithm: 'dijkstra' (default) or 'bellman-ford'.
-///
-/// Returns
-/// -------
-/// list or dict
-///     If source and target are given: a list of nodes.
-///     If only source: dict mapping target -> path.
-///     If neither: dict mapping source -> dict mapping target -> path.
-#[pyfunction]
-#[pyo3(signature = (g, source=None, target=None, weight=None, method="dijkstra"))]
-pub fn shortest_path(
-    py: Python<'_>,
-    g: &PyGraph,
-    source: Option<&Bound<'_, PyAny>>,
-    target: Option<&Bound<'_, PyAny>>,
-    weight: Option<&str>,
-    method: &str,
-) -> PyResult<PyObject> {
-    match (source, target) {
-        (Some(src), Some(tgt)) => {
-            let s = node_key_to_string(py, src)?;
-            let t = node_key_to_string(py, tgt)?;
-            validate_node_exists(g, &s, src)?;
-            validate_node_exists(g, &t, tgt)?;
+/// For undirected graphs, borrows the inner `Graph` directly.
+/// For directed graphs, converts to undirected once and stores the result.
+pub(crate) enum GraphRef<'py> {
+    Undirected(PyRef<'py, PyGraph>),
+    Directed {
+        dg: PyRef<'py, PyDiGraph>,
+        undirected: Box<fnx_classes::Graph>,
+    },
+}
 
-            let path = compute_single_shortest_path(g, &s, &t, weight, method)?;
-            match path {
-                Some(p) => {
-                    let py_path: Vec<PyObject> =
-                        p.iter().map(|n| g.py_node_key(py, n)).collect();
-                    Ok(py_path.into_pyobject(py)?.into_any().unbind())
-                }
-                None => Err(NetworkXNoPath::new_err(format!(
-                    "No path between {} and {}.",
-                    s, t
-                ))),
-            }
+impl<'py> GraphRef<'py> {
+    /// Get a reference to the undirected graph (for algorithm dispatch).
+    pub(crate) fn undirected(&self) -> &fnx_classes::Graph {
+        match self {
+            GraphRef::Undirected(pg) => &pg.inner,
+            GraphRef::Directed { undirected, .. } => undirected,
         }
-        (Some(src), None) => {
-            // Single source → dict {target: path}
-            let s = node_key_to_string(py, src)?;
-            validate_node_exists(g, &s, src)?;
-            let result = PyDict::new(py);
-            for node in g.inner.nodes_ordered() {
-                if let Some(p) = compute_single_shortest_path(g, &s, node, weight, method)? {
-                    let py_path: Vec<PyObject> =
-                        p.iter().map(|n| g.py_node_key(py, n)).collect();
-                    result.set_item(g.py_node_key(py, node), py_path)?;
-                }
-            }
-            Ok(result.into_any().unbind())
+    }
+
+    /// Convert a canonical node key to Python object.
+    fn py_node_key(&self, py: Python<'_>, canonical: &str) -> PyObject {
+        match self {
+            GraphRef::Undirected(pg) => pg.py_node_key(py, canonical),
+            GraphRef::Directed { dg, .. } => dg.py_node_key(py, canonical),
         }
-        (None, Some(tgt)) => {
-            // Single target → dict {source: path}
-            let t = node_key_to_string(py, tgt)?;
-            validate_node_exists(g, &t, tgt)?;
-            let result = PyDict::new(py);
-            for node in g.inner.nodes_ordered() {
-                if let Some(p) = compute_single_shortest_path(g, node, &t, weight, method)? {
-                    let py_path: Vec<PyObject> =
-                        p.iter().map(|n| g.py_node_key(py, n)).collect();
-                    result.set_item(g.py_node_key(py, node), py_path)?;
-                }
-            }
-            Ok(result.into_any().unbind())
+    }
+
+    /// Check if a node exists.
+    fn has_node(&self, canonical: &str) -> bool {
+        match self {
+            GraphRef::Undirected(pg) => pg.inner.has_node(canonical),
+            GraphRef::Directed { dg, .. } => dg.inner.has_node(canonical),
         }
-        (None, None) => {
-            // All pairs → dict {source: {target: path}}
-            let result = PyDict::new(py);
-            for src_node in g.inner.nodes_ordered() {
-                let inner = PyDict::new(py);
-                for tgt_node in g.inner.nodes_ordered() {
-                    if let Some(p) =
-                        compute_single_shortest_path(g, src_node, tgt_node, weight, method)?
-                    {
-                        let py_path: Vec<PyObject> =
-                            p.iter().map(|n| g.py_node_key(py, n)).collect();
-                        inner.set_item(g.py_node_key(py, tgt_node), py_path)?;
-                    }
-                }
-                result.set_item(g.py_node_key(py, src_node), inner)?;
+    }
+
+    /// Is this a directed graph?
+    fn is_directed(&self) -> bool {
+        matches!(self, GraphRef::Directed { .. })
+    }
+
+    /// Get the original graph's node key map.
+    fn node_key_map(&self) -> &HashMap<String, PyObject> {
+        match self {
+            GraphRef::Undirected(pg) => &pg.node_key_map,
+            GraphRef::Directed { dg, .. } => &dg.node_key_map,
+        }
+    }
+
+    /// Look up edge attributes from the original graph for an undirected edge.
+    /// For DiGraph, tries both directions.
+    fn edge_attrs_for_undirected(&self, left: &str, right: &str) -> Option<&Py<PyDict>> {
+        match self {
+            GraphRef::Undirected(pg) => {
+                let ek = PyGraph::edge_key(left, right);
+                pg.edge_py_attrs.get(&ek)
             }
-            Ok(result.into_any().unbind())
+            GraphRef::Directed { dg, .. } => {
+                let ek1 = (left.to_owned(), right.to_owned());
+                if let Some(attrs) = dg.edge_py_attrs.get(&ek1) {
+                    return Some(attrs);
+                }
+                let ek2 = (right.to_owned(), left.to_owned());
+                dg.edge_py_attrs.get(&ek2)
+            }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// shortest_path_length
-// ---------------------------------------------------------------------------
-
-/// Return the shortest path length between source and target.
-///
-/// Parameters
-/// ----------
-/// G : Graph
-/// source : node
-/// target : node
-/// weight : str or None
-///     Currently only unweighted (BFS) length is supported.
-///
-/// Returns
-/// -------
-/// int
-///     Length of the shortest path.
-#[pyfunction]
-#[pyo3(signature = (g, source, target, weight=None))]
-pub fn shortest_path_length(
-    py: Python<'_>,
-    g: &PyGraph,
-    source: &Bound<'_, PyAny>,
-    target: &Bound<'_, PyAny>,
-    weight: Option<&str>,
-) -> PyResult<PyObject> {
-    let s = node_key_to_string(py, source)?;
-    let t = node_key_to_string(py, target)?;
-    validate_node_exists(g, &s, source)?;
-    validate_node_exists(g, &t, target)?;
-
-    if let Some(_w) = weight {
-        // Use weighted shortest path and sum weights
-        let result = fnx_algorithms::shortest_path_weighted(&g.inner, &s, &t, _w);
-        match result.path {
-            Some(path) => {
-                // Sum the edge weights along the path
-                let mut total: f64 = 0.0;
-                for i in 0..path.len() - 1 {
-                    let attrs = g.inner.edge_attrs(&path[i], &path[i + 1]);
-                    let w = attrs
-                        .and_then(|a| a.get(_w))
-                        .and_then(|v| v.parse::<f64>().ok())
-                        .unwrap_or(1.0);
-                    total += w;
-                }
-                Ok(total.into_pyobject(py)?.into_any().unbind())
-            }
-            None => Err(NetworkXNoPath::new_err(format!(
-                "No path between {} and {}.",
-                s, t
-            ))),
-        }
+/// Extract either a `PyGraph` or `PyDiGraph` from a Python argument.
+pub(crate) fn extract_graph<'py>(g: &'py Bound<'py, PyAny>) -> PyResult<GraphRef<'py>> {
+    if let Ok(pg) = g.extract::<PyRef<'py, PyGraph>>() {
+        Ok(GraphRef::Undirected(pg))
+    } else if let Ok(dg) = g.extract::<PyRef<'py, PyDiGraph>>() {
+        let undirected = dg.inner.to_undirected();
+        Ok(GraphRef::Directed { dg, undirected: Box::new(undirected) })
     } else {
-        let result = fnx_algorithms::shortest_path_length(&g.inner, &s, &t);
-        match result.length {
-            Some(len) => Ok(len.into_pyobject(py)?.into_any().unbind()),
-            None => Err(NetworkXNoPath::new_err(format!(
-                "No path between {} and {}.",
-                s, t
-            ))),
-        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected Graph or DiGraph",
+        ))
     }
 }
 
-// ---------------------------------------------------------------------------
-// has_path
-// ---------------------------------------------------------------------------
-
-/// Return True if there is a path between source and target.
-#[pyfunction]
-pub fn has_path(
-    py: Python<'_>,
-    g: &PyGraph,
-    source: &Bound<'_, PyAny>,
-    target: &Bound<'_, PyAny>,
-) -> PyResult<bool> {
-    let s = node_key_to_string(py, source)?;
-    let t = node_key_to_string(py, target)?;
-    validate_node_exists(g, &s, source)?;
-    validate_node_exists(g, &t, target)?;
-    let result = fnx_algorithms::has_path(&g.inner, &s, &t);
-    Ok(result.has_path)
-}
-
-// ---------------------------------------------------------------------------
-// average_shortest_path_length
-// ---------------------------------------------------------------------------
-
-/// Return the average shortest path length of the graph.
-///
-/// Raises ``NetworkXError`` if the graph is not connected.
-#[pyfunction]
-#[pyo3(signature = (g, weight=None))]
-pub fn average_shortest_path_length(
-    py: Python<'_>,
-    g: &PyGraph,
-    weight: Option<&str>,
-) -> PyResult<f64> {
-    if weight.is_some() {
+/// Require undirected graph — raise `NetworkXNotImplemented` on DiGraph.
+fn require_undirected(gr: &GraphRef<'_>, _algo_name: &str) -> PyResult<()> {
+    if gr.is_directed() {
         return Err(crate::NetworkXNotImplemented::new_err(
-            "weighted average_shortest_path_length not yet supported",
+            "not implemented for directed type",
         ));
     }
-    let inner = &g.inner;
-    let (connected, avg) = py.allow_threads(|| {
-        let conn = fnx_algorithms::is_connected(inner);
-        let result = fnx_algorithms::average_shortest_path_length(inner);
-        (conn.is_connected, result.average_shortest_path_length)
-    });
-    if !connected {
-        return Err(NetworkXError::new_err(
-            "Graph is not connected, so d(u,v) is infinite for some pairs.",
-        ));
-    }
-    Ok(avg)
-}
-
-// ---------------------------------------------------------------------------
-// dijkstra_path
-// ---------------------------------------------------------------------------
-
-/// Return the shortest weighted path using Dijkstra's algorithm.
-#[pyfunction]
-#[pyo3(signature = (g, source, target, weight="weight"))]
-pub fn dijkstra_path(
-    py: Python<'_>,
-    g: &PyGraph,
-    source: &Bound<'_, PyAny>,
-    target: &Bound<'_, PyAny>,
-    weight: &str,
-) -> PyResult<Vec<PyObject>> {
-    let s = node_key_to_string(py, source)?;
-    let t = node_key_to_string(py, target)?;
-    validate_node_exists(g, &s, source)?;
-    validate_node_exists(g, &t, target)?;
-
-    let result = fnx_algorithms::shortest_path_weighted(&g.inner, &s, &t, weight);
-    match result.path {
-        Some(p) => Ok(p.iter().map(|n| g.py_node_key(py, n)).collect()),
-        None => Err(NetworkXNoPath::new_err(format!(
-            "No path between {} and {}.",
-            s, t
-        ))),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// bellman_ford_path
-// ---------------------------------------------------------------------------
-
-/// Return the shortest weighted path using Bellman-Ford algorithm.
-///
-/// This handles negative edge weights but raises if a negative cycle exists.
-#[pyfunction]
-#[pyo3(signature = (g, source, target, weight="weight"))]
-pub fn bellman_ford_path(
-    py: Python<'_>,
-    g: &PyGraph,
-    source: &Bound<'_, PyAny>,
-    target: &Bound<'_, PyAny>,
-    weight: &str,
-) -> PyResult<Vec<PyObject>> {
-    let s = node_key_to_string(py, source)?;
-    let t = node_key_to_string(py, target)?;
-    validate_node_exists(g, &s, source)?;
-    validate_node_exists(g, &t, target)?;
-
-    let result = fnx_algorithms::bellman_ford_shortest_paths(&g.inner, &s, weight);
-    if result.negative_cycle_detected {
-        return Err(crate::NetworkXUnbounded::new_err(
-            "Negative cost cycle detected.",
-        ));
-    }
-
-    // Reconstruct path from predecessors
-    let pred_map: std::collections::HashMap<&str, Option<&str>> = result
-        .predecessors
-        .iter()
-        .map(|e| (e.node.as_str(), e.predecessor.as_deref()))
-        .collect();
-
-    // Check target is reachable
-    if !pred_map.contains_key(t.as_str()) {
-        return Err(NetworkXNoPath::new_err(format!(
-            "No path between {} and {}.",
-            s, t
-        )));
-    }
-
-    // Build path by walking predecessors from target to source
-    let mut path = vec![t.clone()];
-    let mut current = t.as_str();
-    while current != s {
-        match pred_map.get(current) {
-            Some(Some(prev)) => {
-                path.push((*prev).to_owned());
-                current = prev;
-            }
-            _ => {
-                return Err(NetworkXNoPath::new_err(format!(
-                    "No path between {} and {}.",
-                    s, t
-                )));
-            }
-        }
-    }
-    path.reverse();
-    Ok(path.iter().map(|n| g.py_node_key(py, n)).collect())
-}
-
-// ---------------------------------------------------------------------------
-// multi_source_dijkstra
-// ---------------------------------------------------------------------------
-
-/// Find shortest weighted paths from multiple source nodes.
-///
-/// Returns
-/// -------
-/// tuple of (distances, paths)
-///     distances: dict mapping node -> float distance
-///     paths: dict mapping node -> list of nodes
-#[pyfunction]
-#[pyo3(signature = (g, sources, weight="weight"))]
-pub fn multi_source_dijkstra(
-    py: Python<'_>,
-    g: &PyGraph,
-    sources: &Bound<'_, PyAny>,
-    weight: &str,
-) -> PyResult<(PyObject, PyObject)> {
-    // Convert sources to canonical strings
-    let iter = pyo3::types::PyIterator::from_object(sources)?;
-    let mut source_strs = Vec::new();
-    for item in iter {
-        let item = item?;
-        let s = node_key_to_string(py, &item)?;
-        validate_node_exists_str(g, &s)?;
-        source_strs.push(s);
-    }
-    let source_refs: Vec<&str> = source_strs.iter().map(String::as_str).collect();
-
-    let result = fnx_algorithms::multi_source_dijkstra(&g.inner, &source_refs, weight);
-
-    // Build distance dict
-    let dist_dict = PyDict::new(py);
-    for entry in &result.distances {
-        dist_dict.set_item(g.py_node_key(py, &entry.node), entry.distance)?;
-    }
-
-    // Build paths dict by reconstructing from predecessors
-    let pred_map: std::collections::HashMap<&str, Option<&str>> = result
-        .predecessors
-        .iter()
-        .map(|e| (e.node.as_str(), e.predecessor.as_deref()))
-        .collect();
-
-    let paths_dict = PyDict::new(py);
-    for entry in &result.distances {
-        let mut path = vec![entry.node.clone()];
-        let mut current = entry.node.as_str();
-        while let Some(Some(prev)) = pred_map.get(current) {
-            path.push((*prev).to_owned());
-            current = prev;
-        }
-        path.reverse();
-        let py_path: Vec<PyObject> = path.iter().map(|n| g.py_node_key(py, n)).collect();
-        paths_dict.set_item(g.py_node_key(py, &entry.node), py_path)?;
-    }
-
-    Ok((
-        dist_dict.into_any().unbind(),
-        paths_dict.into_any().unbind(),
-    ))
-}
-
-// ---------------------------------------------------------------------------
-// is_connected
-// ---------------------------------------------------------------------------
-
-/// Return True if the graph is connected.
-#[pyfunction]
-pub fn is_connected(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_connected(inner).is_connected)
-}
-
-// ---------------------------------------------------------------------------
-// density
-// ---------------------------------------------------------------------------
-
-/// Return the density of the graph.
-#[pyfunction]
-pub fn density(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::density(inner).density)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn validate_node_exists(g: &PyGraph, canonical: &str, py_key: &Bound<'_, PyAny>) -> PyResult<()> {
-    if !g.inner.has_node(canonical) {
+fn validate_node(gr: &GraphRef<'_>, canonical: &str, py_key: &Bound<'_, PyAny>) -> PyResult<()> {
+    if !gr.has_node(canonical) {
         return Err(NodeNotFound::new_err(format!(
             "Node {} is not in G",
             py_key.repr()?
@@ -424,8 +122,8 @@ fn validate_node_exists(g: &PyGraph, canonical: &str, py_key: &Bound<'_, PyAny>)
     Ok(())
 }
 
-fn validate_node_exists_str(g: &PyGraph, canonical: &str) -> PyResult<()> {
-    if !g.inner.has_node(canonical) {
+fn validate_node_str(gr: &GraphRef<'_>, canonical: &str) -> PyResult<()> {
+    if !gr.has_node(canonical) {
         return Err(NodeNotFound::new_err(format!(
             "Node '{}' is not in G",
             canonical
@@ -435,7 +133,7 @@ fn validate_node_exists_str(g: &PyGraph, canonical: &str) -> PyResult<()> {
 }
 
 fn compute_single_shortest_path(
-    g: &PyGraph,
+    inner: &fnx_classes::Graph,
     source: &str,
     target: &str,
     weight: Option<&str>,
@@ -443,22 +141,21 @@ fn compute_single_shortest_path(
 ) -> PyResult<Option<Vec<String>>> {
     match weight {
         None => {
-            let result = fnx_algorithms::shortest_path_unweighted(&g.inner, source, target);
+            let result = fnx_algorithms::shortest_path_unweighted(inner, source, target);
             Ok(result.path)
         }
         Some(w) => match method {
             "dijkstra" => {
-                let result = fnx_algorithms::shortest_path_weighted(&g.inner, source, target, w);
+                let result = fnx_algorithms::shortest_path_weighted(inner, source, target, w);
                 Ok(result.path)
             }
             "bellman-ford" => {
-                let result = fnx_algorithms::bellman_ford_shortest_paths(&g.inner, source, w);
+                let result = fnx_algorithms::bellman_ford_shortest_paths(inner, source, w);
                 if result.negative_cycle_detected {
                     return Err(crate::NetworkXUnbounded::new_err(
                         "Negative cost cycle detected.",
                     ));
                 }
-                // Reconstruct path to target from predecessors
                 let pred_map: std::collections::HashMap<&str, Option<&str>> = result
                     .predecessors
                     .iter()
@@ -491,147 +188,590 @@ fn compute_single_shortest_path(
     }
 }
 
+/// Helper to convert CentralityScore vec to Python dict.
+fn centrality_to_dict(
+    py: Python<'_>,
+    gr: &GraphRef<'_>,
+    scores: &[fnx_algorithms::CentralityScore],
+) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    for s in scores {
+        dict.set_item(gr.py_node_key(py, &s.node), s.score)?;
+    }
+    Ok(dict.unbind())
+}
+
+// ---------------------------------------------------------------------------
+// shortest_path
+// ---------------------------------------------------------------------------
+
+/// Compute shortest paths in the graph.
+///
+/// Parameters
+/// ----------
+/// G : Graph or DiGraph
+///     The input graph.
+/// source : node, optional
+///     Starting node for the path.
+/// target : node, optional
+///     Ending node for the path.
+/// weight : str, optional
+///     Edge attribute to use as weight. If None, all edges have weight 1.
+/// method : str, optional
+///     Algorithm: ``'dijkstra'`` (default) or ``'bellman-ford'``.
+///
+/// Returns
+/// -------
+/// path : list
+///     List of nodes in the shortest path from source to target.
+///
+/// Raises
+/// ------
+/// NodeNotFound
+///     If source or target is not in the graph.
+/// NetworkXNoPath
+///     If no path exists between source and target.
+#[pyfunction]
+#[pyo3(signature = (g, source=None, target=None, weight=None, method="dijkstra"))]
+pub fn shortest_path(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    source: Option<&Bound<'_, PyAny>>,
+    target: Option<&Bound<'_, PyAny>>,
+    weight: Option<&str>,
+    method: &str,
+) -> PyResult<PyObject> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    log::info!(target: "franken_networkx", "shortest_path: nodes={} edges={}", inner.node_count(), inner.edge_count());
+    match (source, target) {
+        (Some(src), Some(tgt)) => {
+            let s = node_key_to_string(py, src)?;
+            let t = node_key_to_string(py, tgt)?;
+            validate_node(&gr, &s, src)?;
+            validate_node(&gr, &t, tgt)?;
+
+            let path = compute_single_shortest_path(inner, &s, &t, weight, method)?;
+            match path {
+                Some(p) => {
+                    let py_path: Vec<PyObject> =
+                        p.iter().map(|n| gr.py_node_key(py, n)).collect();
+                    Ok(py_path.into_pyobject(py)?.into_any().unbind())
+                }
+                None => Err(NetworkXNoPath::new_err(format!(
+                    "No path between {} and {}.",
+                    s, t
+                ))),
+            }
+        }
+        (Some(src), None) => {
+            let s = node_key_to_string(py, src)?;
+            validate_node(&gr, &s, src)?;
+            let result = PyDict::new(py);
+            for node in inner.nodes_ordered() {
+                if let Some(p) = compute_single_shortest_path(inner, &s, node, weight, method)? {
+                    let py_path: Vec<PyObject> =
+                        p.iter().map(|n| gr.py_node_key(py, n)).collect();
+                    result.set_item(gr.py_node_key(py, node), py_path)?;
+                }
+            }
+            Ok(result.into_any().unbind())
+        }
+        (None, Some(tgt)) => {
+            let t = node_key_to_string(py, tgt)?;
+            validate_node(&gr, &t, tgt)?;
+            let result = PyDict::new(py);
+            for node in inner.nodes_ordered() {
+                if let Some(p) = compute_single_shortest_path(inner, node, &t, weight, method)? {
+                    let py_path: Vec<PyObject> =
+                        p.iter().map(|n| gr.py_node_key(py, n)).collect();
+                    result.set_item(gr.py_node_key(py, node), py_path)?;
+                }
+            }
+            Ok(result.into_any().unbind())
+        }
+        (None, None) => {
+            let result = PyDict::new(py);
+            for src_node in inner.nodes_ordered() {
+                let inner_dict = PyDict::new(py);
+                for tgt_node in inner.nodes_ordered() {
+                    if let Some(p) =
+                        compute_single_shortest_path(inner, src_node, tgt_node, weight, method)?
+                    {
+                        let py_path: Vec<PyObject> =
+                            p.iter().map(|n| gr.py_node_key(py, n)).collect();
+                        inner_dict.set_item(gr.py_node_key(py, tgt_node), py_path)?;
+                    }
+                }
+                result.set_item(gr.py_node_key(py, src_node), inner_dict)?;
+            }
+            Ok(result.into_any().unbind())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// shortest_path_length
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (g, source, target, weight=None))]
+pub fn shortest_path_length(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+    target: &Bound<'_, PyAny>,
+    weight: Option<&str>,
+) -> PyResult<PyObject> {
+    let gr = extract_graph(g)?;
+    let s = node_key_to_string(py, source)?;
+    let t = node_key_to_string(py, target)?;
+    validate_node(&gr, &s, source)?;
+    validate_node(&gr, &t, target)?;
+    let inner = gr.undirected();
+
+    if let Some(_w) = weight {
+        let result = fnx_algorithms::shortest_path_weighted(inner, &s, &t, _w);
+        match result.path {
+            Some(path) => {
+                let mut total: f64 = 0.0;
+                for i in 0..path.len() - 1 {
+                    let attrs = inner.edge_attrs(&path[i], &path[i + 1]);
+                    let w = attrs
+                        .and_then(|a| a.get(_w))
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(1.0);
+                    total += w;
+                }
+                Ok(total.into_pyobject(py)?.into_any().unbind())
+            }
+            None => Err(NetworkXNoPath::new_err(format!(
+                "No path between {} and {}.",
+                s, t
+            ))),
+        }
+    } else {
+        let result = fnx_algorithms::shortest_path_length(inner, &s, &t);
+        match result.length {
+            Some(len) => Ok(len.into_pyobject(py)?.into_any().unbind()),
+            None => Err(NetworkXNoPath::new_err(format!(
+                "No path between {} and {}.",
+                s, t
+            ))),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// has_path
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+pub fn has_path(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+    target: &Bound<'_, PyAny>,
+) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let s = node_key_to_string(py, source)?;
+    let t = node_key_to_string(py, target)?;
+    validate_node(&gr, &s, source)?;
+    validate_node(&gr, &t, target)?;
+    let result = fnx_algorithms::has_path(gr.undirected(), &s, &t);
+    Ok(result.has_path)
+}
+
+// ---------------------------------------------------------------------------
+// average_shortest_path_length
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (g, weight=None))]
+pub fn average_shortest_path_length(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    weight: Option<&str>,
+) -> PyResult<f64> {
+    if weight.is_some() {
+        return Err(crate::NetworkXNotImplemented::new_err(
+            "weighted average_shortest_path_length not yet supported",
+        ));
+    }
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    let (connected, avg) = py.allow_threads(|| {
+        let conn = fnx_algorithms::is_connected(inner);
+        let result = fnx_algorithms::average_shortest_path_length(inner);
+        (conn.is_connected, result.average_shortest_path_length)
+    });
+    if !connected {
+        return Err(NetworkXError::new_err("Graph is not connected."));
+    }
+    Ok(avg)
+}
+
+// ---------------------------------------------------------------------------
+// dijkstra_path
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (g, source, target, weight="weight"))]
+pub fn dijkstra_path(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+    target: &Bound<'_, PyAny>,
+    weight: &str,
+) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let s = node_key_to_string(py, source)?;
+    let t = node_key_to_string(py, target)?;
+    validate_node(&gr, &s, source)?;
+    validate_node(&gr, &t, target)?;
+
+    let result = fnx_algorithms::shortest_path_weighted(gr.undirected(), &s, &t, weight);
+    match result.path {
+        Some(p) => Ok(p.iter().map(|n| gr.py_node_key(py, n)).collect()),
+        None => Err(NetworkXNoPath::new_err(format!(
+            "No path between {} and {}.",
+            s, t
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// bellman_ford_path
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (g, source, target, weight="weight"))]
+pub fn bellman_ford_path(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    source: &Bound<'_, PyAny>,
+    target: &Bound<'_, PyAny>,
+    weight: &str,
+) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let s = node_key_to_string(py, source)?;
+    let t = node_key_to_string(py, target)?;
+    validate_node(&gr, &s, source)?;
+    validate_node(&gr, &t, target)?;
+
+    let result = fnx_algorithms::bellman_ford_shortest_paths(gr.undirected(), &s, weight);
+    if result.negative_cycle_detected {
+        return Err(crate::NetworkXUnbounded::new_err(
+            "Negative cost cycle detected.",
+        ));
+    }
+
+    let pred_map: std::collections::HashMap<&str, Option<&str>> = result
+        .predecessors
+        .iter()
+        .map(|e| (e.node.as_str(), e.predecessor.as_deref()))
+        .collect();
+
+    if !pred_map.contains_key(t.as_str()) {
+        return Err(NetworkXNoPath::new_err(format!(
+            "No path between {} and {}.",
+            s, t
+        )));
+    }
+
+    let mut path = vec![t.clone()];
+    let mut current = t.as_str();
+    while current != s {
+        match pred_map.get(current) {
+            Some(Some(prev)) => {
+                path.push((*prev).to_owned());
+                current = prev;
+            }
+            _ => {
+                return Err(NetworkXNoPath::new_err(format!(
+                    "No path between {} and {}.",
+                    s, t
+                )));
+            }
+        }
+    }
+    path.reverse();
+    Ok(path.iter().map(|n| gr.py_node_key(py, n)).collect())
+}
+
+// ---------------------------------------------------------------------------
+// multi_source_dijkstra
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(signature = (g, sources, weight="weight"))]
+pub fn multi_source_dijkstra(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    sources: &Bound<'_, PyAny>,
+    weight: &str,
+) -> PyResult<(PyObject, PyObject)> {
+    let gr = extract_graph(g)?;
+    let iter = pyo3::types::PyIterator::from_object(sources)?;
+    let mut source_strs = Vec::new();
+    for item in iter {
+        let item = item?;
+        let s = node_key_to_string(py, &item)?;
+        validate_node_str(&gr, &s)?;
+        source_strs.push(s);
+    }
+    let source_refs: Vec<&str> = source_strs.iter().map(String::as_str).collect();
+
+    let result = fnx_algorithms::multi_source_dijkstra(gr.undirected(), &source_refs, weight);
+
+    let dist_dict = PyDict::new(py);
+    for entry in &result.distances {
+        dist_dict.set_item(gr.py_node_key(py, &entry.node), entry.distance)?;
+    }
+
+    let pred_map: std::collections::HashMap<&str, Option<&str>> = result
+        .predecessors
+        .iter()
+        .map(|e| (e.node.as_str(), e.predecessor.as_deref()))
+        .collect();
+
+    let paths_dict = PyDict::new(py);
+    for entry in &result.distances {
+        let mut path = vec![entry.node.clone()];
+        let mut current = entry.node.as_str();
+        while let Some(Some(prev)) = pred_map.get(current) {
+            path.push((*prev).to_owned());
+            current = prev;
+        }
+        path.reverse();
+        let py_path: Vec<PyObject> = path.iter().map(|n| gr.py_node_key(py, n)).collect();
+        paths_dict.set_item(gr.py_node_key(py, &entry.node), py_path)?;
+    }
+
+    Ok((
+        dist_dict.into_any().unbind(),
+        paths_dict.into_any().unbind(),
+    ))
+}
+
 // ===========================================================================
 // Connectivity algorithms
 // ===========================================================================
 
-/// Return the connected components as a list of sets.
+/// Return True if the graph is connected, False otherwise.
+///
+/// Parameters
+/// ----------
+/// G : Graph
+///     An undirected graph.
+///
+/// Returns
+/// -------
+/// connected : bool
+///     True if the graph is connected.
+///
+/// Raises
+/// ------
+/// NetworkXNotImplemented
+///     If the graph is directed.
 #[pyfunction]
-pub fn connected_components(py: Python<'_>, g: &PyGraph) -> Vec<PyObject> {
-    let inner = &g.inner;
+pub fn is_connected(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "is_connected")?;
+    let inner = gr.undirected();
+    log::info!(target: "franken_networkx", "is_connected: nodes={} edges={}", inner.node_count(), inner.edge_count());
+    Ok(py.allow_threads(|| fnx_algorithms::is_connected(inner).is_connected))
+}
+
+/// Return the density of the graph.
+#[pyfunction]
+pub fn density(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::density(inner).density))
+}
+
+/// Generate connected components.
+///
+/// Parameters
+/// ----------
+/// G : Graph
+///     An undirected graph.
+///
+/// Returns
+/// -------
+/// comp : list of lists
+///     A list of lists, one per connected component, each containing
+///     the nodes in the component.
+///
+/// Raises
+/// ------
+/// NetworkXNotImplemented
+///     If the graph is directed.
+#[pyfunction]
+pub fn connected_components(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "connected_components")?;
+    let inner = gr.undirected();
+    log::info!(target: "franken_networkx", "connected_components: nodes={} edges={}", inner.node_count(), inner.edge_count());
     let result = py.allow_threads(|| fnx_algorithms::connected_components(inner));
-    result
+    Ok(result
         .components
         .iter()
         .map(|comp| {
-            let py_set: Vec<PyObject> = comp.iter().map(|n| g.py_node_key(py, n)).collect();
+            let py_set: Vec<PyObject> = comp.iter().map(|n| gr.py_node_key(py, n)).collect();
             py_set.into_pyobject(py).unwrap().into_any().unbind()
         })
-        .collect()
+        .collect())
 }
 
 /// Return the number of connected components.
+/// Raises ``NetworkXNotImplemented`` on DiGraph.
 #[pyfunction]
-pub fn number_connected_components(py: Python<'_>, g: &PyGraph) -> usize {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::number_connected_components(inner).count)
+pub fn number_connected_components(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "number_connected_components")?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::number_connected_components(inner).count))
 }
 
 /// Return the node connectivity of the graph.
 #[pyfunction]
-pub fn node_connectivity(py: Python<'_>, g: &PyGraph) -> usize {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::global_node_connectivity(inner).value)
+pub fn node_connectivity(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::global_node_connectivity(inner).value))
 }
 
 /// Return a minimum node cut of the graph.
 #[pyfunction]
-pub fn minimum_node_cut(py: Python<'_>, g: &PyGraph) -> Vec<PyObject> {
-    let inner = &g.inner;
+pub fn minimum_node_cut(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::global_minimum_node_cut(inner));
-    result
+    Ok(result
         .cut_nodes
         .iter()
-        .map(|n| g.py_node_key(py, n))
-        .collect()
+        .map(|n| gr.py_node_key(py, n))
+        .collect())
 }
 
 /// Return the edge connectivity of the graph.
 #[pyfunction]
 #[pyo3(signature = (g, capacity="capacity"))]
-pub fn edge_connectivity(py: Python<'_>, g: &PyGraph, capacity: &str) -> f64 {
-    let inner = &g.inner;
+pub fn edge_connectivity(py: Python<'_>, g: &Bound<'_, PyAny>, capacity: &str) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let cap = capacity.to_owned();
-    py.allow_threads(move || fnx_algorithms::global_edge_connectivity_edmonds_karp(inner, &cap).value)
+    Ok(py.allow_threads(move || {
+        fnx_algorithms::global_edge_connectivity_edmonds_karp(inner, &cap).value
+    }))
 }
 
 /// Return articulation points (cut vertices) of the graph.
+/// Raises ``NetworkXNotImplemented`` on DiGraph.
 #[pyfunction]
-pub fn articulation_points(py: Python<'_>, g: &PyGraph) -> Vec<PyObject> {
-    let inner = &g.inner;
+pub fn articulation_points(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "articulation_points")?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::articulation_points(inner));
-    result
+    Ok(result
         .nodes
         .iter()
-        .map(|n| g.py_node_key(py, n))
-        .collect()
+        .map(|n| gr.py_node_key(py, n))
+        .collect())
 }
 
 /// Return bridges (cut edges) of the graph.
+/// Raises ``NetworkXNotImplemented`` on DiGraph.
 #[pyfunction]
-pub fn bridges(py: Python<'_>, g: &PyGraph) -> Vec<(PyObject, PyObject)> {
-    let inner = &g.inner;
+pub fn bridges(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "bridges")?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::bridges(inner));
-    result
+    Ok(result
         .edges
         .iter()
-        .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
-        .collect()
+        .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
+        .collect())
 }
 
 // ===========================================================================
 // Centrality algorithms
 // ===========================================================================
 
-/// Helper to convert CentralityScore vec to Python dict.
-fn centrality_to_dict(py: Python<'_>, g: &PyGraph, scores: &[fnx_algorithms::CentralityScore]) -> PyResult<Py<PyDict>> {
-    let dict = PyDict::new(py);
-    for s in scores {
-        dict.set_item(g.py_node_key(py, &s.node), s.score)?;
-    }
-    Ok(dict.unbind())
-}
-
 /// Return the degree centrality for all nodes.
 #[pyfunction]
-pub fn degree_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn degree_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::degree_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return the closeness centrality for all nodes.
 #[pyfunction]
-pub fn closeness_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn closeness_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::closeness_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return the harmonic centrality for all nodes.
 #[pyfunction]
-pub fn harmonic_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn harmonic_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::harmonic_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return the Katz centrality for all nodes.
 #[pyfunction]
-pub fn katz_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn katz_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::katz_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
-/// Return the betweenness centrality for all nodes.
+/// Compute the shortest-path betweenness centrality for nodes.
+///
+/// Parameters
+/// ----------
+/// G : Graph or DiGraph
+///     The input graph.
+///
+/// Returns
+/// -------
+/// nodes : dict
+///     Dictionary of nodes with betweenness centrality as the value.
 #[pyfunction]
-pub fn betweenness_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn betweenness_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    log::info!(target: "franken_networkx", "betweenness_centrality: nodes={} edges={}", inner.node_count(), inner.edge_count());
     let result = py.allow_threads(|| fnx_algorithms::betweenness_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return the edge betweenness centrality for all edges.
 #[pyfunction]
-pub fn edge_betweenness_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn edge_betweenness_centrality(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::edge_betweenness_centrality(inner));
     let dict = PyDict::new(py);
     for s in &result.scores {
         let key = pyo3::types::PyTuple::new(py, &[
-            g.py_node_key(py, &s.left),
-            g.py_node_key(py, &s.right),
+            gr.py_node_key(py, &s.left),
+            gr.py_node_key(py, &s.right),
         ])?;
         dict.set_item(key, s.score)?;
     }
@@ -640,122 +780,158 @@ pub fn edge_betweenness_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<P
 
 /// Return the eigenvector centrality for all nodes.
 #[pyfunction]
-pub fn eigenvector_centrality(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn eigenvector_centrality(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::eigenvector_centrality(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
-/// Return the PageRank for all nodes.
+/// Compute the PageRank of each node.
+///
+/// Parameters
+/// ----------
+/// G : Graph or DiGraph
+///     The input graph. Undirected graphs are treated as directed
+///     with edges in both directions.
+///
+/// Returns
+/// -------
+/// pagerank : dict
+///     Dictionary of nodes with PageRank as value.
 #[pyfunction]
-pub fn pagerank(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn pagerank(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    log::info!(target: "franken_networkx", "pagerank: nodes={} edges={}", inner.node_count(), inner.edge_count());
     let result = py.allow_threads(|| fnx_algorithms::pagerank(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return HITS hubs and authorities scores.
-///
-/// Returns (hubs_dict, authorities_dict).
 #[pyfunction]
-pub fn hits(py: Python<'_>, g: &PyGraph) -> PyResult<(Py<PyDict>, Py<PyDict>)> {
-    let inner = &g.inner;
+pub fn hits(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<(Py<PyDict>, Py<PyDict>)> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::hits_centrality(inner));
-    let hubs = centrality_to_dict(py, g, &result.hubs)?;
-    let auths = centrality_to_dict(py, g, &result.authorities)?;
+    let hubs = centrality_to_dict(py, &gr, &result.hubs)?;
+    let auths = centrality_to_dict(py, &gr, &result.authorities)?;
     Ok((hubs, auths))
 }
 
 /// Return the average neighbor degree for each node.
 #[pyfunction]
-pub fn average_neighbor_degree(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn average_neighbor_degree(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::average_neighbor_degree(inner));
     let dict = PyDict::new(py);
     for s in &result.scores {
-        dict.set_item(g.py_node_key(py, &s.node), s.avg_neighbor_degree)?;
+        dict.set_item(gr.py_node_key(py, &s.node), s.avg_neighbor_degree)?;
     }
     Ok(dict.unbind())
 }
 
 /// Return the degree assortativity coefficient.
 #[pyfunction]
-pub fn degree_assortativity_coefficient(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::degree_assortativity_coefficient(inner).coefficient)
+pub fn degree_assortativity_coefficient(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::degree_assortativity_coefficient(inner).coefficient))
 }
 
 /// Return a list of nodes in decreasing voterank order.
 #[pyfunction]
-pub fn voterank(py: Python<'_>, g: &PyGraph) -> Vec<PyObject> {
-    let inner = &g.inner;
+pub fn voterank(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::voterank(inner));
-    result.ranked.iter().map(|n| g.py_node_key(py, n)).collect()
+    Ok(result.ranked.iter().map(|n| gr.py_node_key(py, n)).collect())
 }
 
 // ===========================================================================
 // Clustering algorithms
 // ===========================================================================
 
-/// Return the clustering coefficient for each node.
+/// Compute the clustering coefficient for nodes.
+///
+/// Parameters
+/// ----------
+/// G : Graph or DiGraph
+///     The input graph.
+///
+/// Returns
+/// -------
+/// clust : dict
+///     Dictionary of nodes with clustering coefficient as the value.
 #[pyfunction]
-pub fn clustering(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn clustering(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::clustering_coefficient(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return the average clustering coefficient.
 #[pyfunction]
-pub fn average_clustering(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::clustering_coefficient(inner).average_clustering)
+pub fn average_clustering(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::clustering_coefficient(inner).average_clustering))
 }
 
 /// Return the transitivity (global clustering coefficient).
 #[pyfunction]
-pub fn transitivity(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::clustering_coefficient(inner).transitivity)
+pub fn transitivity(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::clustering_coefficient(inner).transitivity))
 }
 
 /// Return the number of triangles for each node.
 #[pyfunction]
-pub fn triangles(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn triangles(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::triangles(inner));
     let dict = PyDict::new(py);
     for t in &result.triangles {
-        dict.set_item(g.py_node_key(py, &t.node), t.count)?;
+        dict.set_item(gr.py_node_key(py, &t.node), t.count)?;
     }
     Ok(dict.unbind())
 }
 
 /// Return the square clustering coefficient for each node.
 #[pyfunction]
-pub fn square_clustering(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn square_clustering(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::square_clustering(inner));
-    centrality_to_dict(py, g, &result.scores)
+    centrality_to_dict(py, &gr, &result.scores)
 }
 
 /// Return all maximal cliques as a list of lists.
 #[pyfunction]
-pub fn find_cliques(py: Python<'_>, g: &PyGraph) -> Vec<Vec<PyObject>> {
-    let inner = &g.inner;
+pub fn find_cliques(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<PyObject>>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::find_cliques(inner));
-    result
+    Ok(result
         .cliques
         .iter()
-        .map(|clique| clique.iter().map(|n| g.py_node_key(py, n)).collect())
-        .collect()
+        .map(|clique| clique.iter().map(|n| gr.py_node_key(py, n)).collect())
+        .collect())
 }
 
 /// Return the size of the largest maximal clique.
 #[pyfunction]
-pub fn graph_clique_number(py: Python<'_>, g: &PyGraph) -> usize {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::graph_clique_number(inner).clique_number)
+pub fn graph_clique_number(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::graph_clique_number(inner).clique_number))
 }
 
 // ===========================================================================
@@ -764,57 +940,75 @@ pub fn graph_clique_number(py: Python<'_>, g: &PyGraph) -> usize {
 
 /// Return a maximal matching as a set of edge tuples.
 #[pyfunction]
-pub fn maximal_matching(py: Python<'_>, g: &PyGraph) -> Vec<(PyObject, PyObject)> {
-    let inner = &g.inner;
+pub fn maximal_matching(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::maximal_matching(inner));
-    result
+    Ok(result
         .matching
         .iter()
-        .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
-        .collect()
+        .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
+        .collect())
 }
 
 /// Return a max-weight matching as a set of edge tuples.
 #[pyfunction]
 #[pyo3(signature = (g, weight="weight"))]
-pub fn max_weight_matching(py: Python<'_>, g: &PyGraph, weight: &str) -> Vec<(PyObject, PyObject)> {
-    let inner = &g.inner;
+pub fn max_weight_matching(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    weight: &str,
+) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let w = weight.to_owned();
     let result = py.allow_threads(move || fnx_algorithms::min_weight_matching(inner, &w));
-    result
+    Ok(result
         .matching
         .iter()
-        .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
-        .collect()
+        .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
+        .collect())
 }
 
 /// Return a min-weight matching as a set of edge tuples.
 #[pyfunction]
 #[pyo3(signature = (g, weight="weight"))]
-pub fn min_weight_matching(py: Python<'_>, g: &PyGraph, weight: &str) -> Vec<(PyObject, PyObject)> {
-    let inner = &g.inner;
+pub fn min_weight_matching(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+    weight: &str,
+) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let w = weight.to_owned();
     let result = py.allow_threads(move || fnx_algorithms::min_weight_matching(inner, &w));
-    result
+    Ok(result
         .matching
         .iter()
-        .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
-        .collect()
+        .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
+        .collect())
 }
 
 /// Return a minimum edge cover as a set of edge tuples.
 #[pyfunction]
-pub fn min_edge_cover(py: Python<'_>, g: &PyGraph) -> PyResult<Vec<(PyObject, PyObject)>> {
-    let inner = &g.inner;
+pub fn min_edge_cover(
+    py: Python<'_>,
+    g: &Bound<'_, PyAny>,
+) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::min_edge_cover(inner));
     match result {
         Some(r) => Ok(r
             .edges
             .iter()
-            .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
+            .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
             .collect()),
         None => Err(NetworkXError::new_err(
-            "Graph has isolated nodes, no edge cover exists.",
+            "Graph has a node with no edge incident on it, so no edge cover exists.",
         )),
     }
 }
@@ -828,14 +1022,15 @@ pub fn min_edge_cover(py: Python<'_>, g: &PyGraph) -> PyResult<Vec<(PyObject, Py
 #[pyo3(signature = (g, source, sink, capacity="capacity"))]
 pub fn maximum_flow_value(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     source: &Bound<'_, PyAny>,
     sink: &Bound<'_, PyAny>,
     capacity: &str,
 ) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
     let s = node_key_to_string(py, source)?;
     let t = node_key_to_string(py, sink)?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let cap = capacity.to_owned();
     Ok(py.allow_threads(move || fnx_algorithms::max_flow_edmonds_karp(inner, &s, &t, &cap).value))
 }
@@ -845,16 +1040,21 @@ pub fn maximum_flow_value(
 #[pyo3(signature = (g, source, sink, capacity="capacity"))]
 pub fn minimum_cut_value(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     source: &Bound<'_, PyAny>,
     sink: &Bound<'_, PyAny>,
     capacity: &str,
 ) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
     let s = node_key_to_string(py, source)?;
     let t = node_key_to_string(py, sink)?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let cap = capacity.to_owned();
-    Ok(py.allow_threads(move || fnx_algorithms::minimum_cut_edmonds_karp(inner, &s, &t, &cap).value))
+    Ok(
+        py.allow_threads(move || {
+            fnx_algorithms::minimum_cut_edmonds_karp(inner, &s, &t, &cap).value
+        }),
+    )
 }
 
 // ===========================================================================
@@ -863,77 +1063,86 @@ pub fn minimum_cut_value(
 
 /// Return the eccentricity of each node as a dict.
 #[pyfunction]
-pub fn eccentricity(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn eccentricity(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::distance_measures(inner));
     let dict = PyDict::new(py);
     for e in &result.eccentricity {
-        dict.set_item(g.py_node_key(py, &e.node), e.value)?;
+        dict.set_item(gr.py_node_key(py, &e.node), e.value)?;
     }
     Ok(dict.unbind())
 }
 
 /// Return the diameter of the graph.
 #[pyfunction]
-pub fn diameter(py: Python<'_>, g: &PyGraph) -> PyResult<usize> {
-    let inner = &g.inner;
+pub fn diameter(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let (connected, result) = py.allow_threads(|| {
         let c = fnx_algorithms::is_connected(inner);
         let r = fnx_algorithms::distance_measures(inner);
         (c.is_connected, r)
     });
     if !connected {
-        return Err(NetworkXError::new_err("Graph is not connected."));
+        return Err(NetworkXError::new_err("Found infinite path length because the graph is not connected"));
     }
     Ok(result.diameter)
 }
 
 /// Return the radius of the graph.
 #[pyfunction]
-pub fn radius(py: Python<'_>, g: &PyGraph) -> PyResult<usize> {
-    let inner = &g.inner;
+pub fn radius(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let (connected, result) = py.allow_threads(|| {
         let c = fnx_algorithms::is_connected(inner);
         let r = fnx_algorithms::distance_measures(inner);
         (c.is_connected, r)
     });
     if !connected {
-        return Err(NetworkXError::new_err("Graph is not connected."));
+        return Err(NetworkXError::new_err("Found infinite path length because the graph is not connected"));
     }
     Ok(result.radius)
 }
 
 /// Return the center of the graph.
 #[pyfunction]
-pub fn center(py: Python<'_>, g: &PyGraph) -> PyResult<Vec<PyObject>> {
-    let inner = &g.inner;
+pub fn center(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let (connected, result) = py.allow_threads(|| {
         let c = fnx_algorithms::is_connected(inner);
         let r = fnx_algorithms::distance_measures(inner);
         (c.is_connected, r)
     });
     if !connected {
-        return Err(NetworkXError::new_err("Graph is not connected."));
+        return Err(NetworkXError::new_err("Found infinite path length because the graph is not connected"));
     }
-    Ok(result.center.iter().map(|n| g.py_node_key(py, n)).collect())
+    Ok(result
+        .center
+        .iter()
+        .map(|n| gr.py_node_key(py, n))
+        .collect())
 }
 
 /// Return the periphery of the graph.
 #[pyfunction]
-pub fn periphery(py: Python<'_>, g: &PyGraph) -> PyResult<Vec<PyObject>> {
-    let inner = &g.inner;
+pub fn periphery(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Vec<PyObject>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let (connected, result) = py.allow_threads(|| {
         let c = fnx_algorithms::is_connected(inner);
         let r = fnx_algorithms::distance_measures(inner);
         (c.is_connected, r)
     });
     if !connected {
-        return Err(NetworkXError::new_err("Graph is not connected."));
+        return Err(NetworkXError::new_err("Found infinite path length because the graph is not connected"));
     }
     Ok(result
         .periphery
         .iter()
-        .map(|n| g.py_node_key(py, n))
+        .map(|n| gr.py_node_key(py, n))
         .collect())
 }
 
@@ -943,81 +1152,96 @@ pub fn periphery(py: Python<'_>, g: &PyGraph) -> PyResult<Vec<PyObject>> {
 
 /// Return True if the graph is a tree.
 #[pyfunction]
-pub fn is_tree(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_tree(inner).is_tree)
+pub fn is_tree(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::is_tree(inner).is_tree))
 }
 
 /// Return True if the graph is a forest.
 #[pyfunction]
-pub fn is_forest(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_forest(inner).is_forest)
+pub fn is_forest(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::is_forest(inner).is_forest))
 }
 
 /// Return True if the graph is bipartite.
 #[pyfunction]
-pub fn is_bipartite(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_bipartite(inner).is_bipartite)
+pub fn is_bipartite(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::is_bipartite(inner).is_bipartite))
 }
 
 /// Return the two bipartite node sets.
 #[pyfunction]
 pub fn bipartite_sets(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
 ) -> PyResult<(Vec<PyObject>, Vec<PyObject>)> {
-    let inner = &g.inner;
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::bipartite_sets(inner));
     if !result.is_bipartite {
         return Err(NetworkXError::new_err("Graph is not bipartite."));
     }
-    let a: Vec<PyObject> = result.set_a.iter().map(|n| g.py_node_key(py, n)).collect();
-    let b: Vec<PyObject> = result.set_b.iter().map(|n| g.py_node_key(py, n)).collect();
+    let a: Vec<PyObject> = result.set_a.iter().map(|n| gr.py_node_key(py, n)).collect();
+    let b: Vec<PyObject> = result.set_b.iter().map(|n| gr.py_node_key(py, n)).collect();
     Ok((a, b))
 }
 
 /// Return a greedy graph coloring as a dict mapping node -> color.
 #[pyfunction]
-pub fn greedy_color(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn greedy_color(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::greedy_color(inner));
     let dict = PyDict::new(py);
     for nc in &result.coloring {
-        dict.set_item(g.py_node_key(py, &nc.node), nc.color)?;
+        dict.set_item(gr.py_node_key(py, &nc.node), nc.color)?;
     }
     Ok(dict.unbind())
 }
 
 /// Return the core number for each node.
 #[pyfunction]
-pub fn core_number(py: Python<'_>, g: &PyGraph) -> PyResult<Py<PyDict>> {
-    let inner = &g.inner;
+pub fn core_number(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<Py<PyDict>> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::core_number(inner));
     let dict = PyDict::new(py);
     for nc in &result.core_numbers {
-        dict.set_item(g.py_node_key(py, &nc.node), nc.core)?;
+        dict.set_item(gr.py_node_key(py, &nc.node), nc.core)?;
     }
     Ok(dict.unbind())
 }
 
-/// Return a minimum spanning tree as a new Graph.
+/// Return a minimum spanning tree or forest on an undirected graph.
+///
+/// Parameters
+/// ----------
+/// G : Graph or DiGraph
+///     The input graph.
+/// weight : str, optional
+///     Edge data key to use as weight (default ``'weight'``).
 #[pyfunction]
 #[pyo3(signature = (g, weight="weight"))]
 pub fn minimum_spanning_tree(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     weight: &str,
 ) -> PyResult<PyGraph> {
-    let inner = &g.inner;
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
     let w = weight.to_owned();
     let result = py.allow_threads(move || fnx_algorithms::minimum_spanning_tree(inner, &w));
     let mut new_graph = PyGraph::new_empty(py)?;
+
     // Add all nodes from original graph
-    for node in g.inner.nodes_ordered() {
+    for node in inner.nodes_ordered() {
         new_graph.inner.add_node(node.to_owned());
-        if let Some(py_key) = g.node_key_map.get(node) {
+        if let Some(py_key) = gr.node_key_map().get(node) {
             new_graph
                 .node_key_map
                 .insert(node.to_owned(), py_key.clone_ref(py));
@@ -1025,10 +1249,11 @@ pub fn minimum_spanning_tree(
     }
     // Add MST edges
     for edge in &result.edges {
-        let _ = new_graph.inner.add_edge(edge.left.clone(), edge.right.clone());
-        // Copy edge attrs from original graph if present
+        let _ = new_graph
+            .inner
+            .add_edge(edge.left.clone(), edge.right.clone());
         let ek = PyGraph::edge_key(&edge.left, &edge.right);
-        if let Some(attrs) = g.edge_py_attrs.get(&ek) {
+        if let Some(attrs) = gr.edge_attrs_for_undirected(&edge.left, &edge.right) {
             new_graph
                 .edge_py_attrs
                 .insert(ek, attrs.bind(py).copy()?.unbind());
@@ -1043,23 +1268,26 @@ pub fn minimum_spanning_tree(
 
 /// Return True if the graph is Eulerian.
 #[pyfunction]
-pub fn is_eulerian(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_eulerian(inner).is_eulerian)
+pub fn is_eulerian(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::is_eulerian(inner).is_eulerian))
 }
 
 /// Return True if the graph has an Eulerian path.
 #[pyfunction]
-pub fn has_eulerian_path(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::has_eulerian_path(inner).has_eulerian_path)
+pub fn has_eulerian_path(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::has_eulerian_path(inner).has_eulerian_path))
 }
 
 /// Return True if the graph is semi-Eulerian.
 #[pyfunction]
-pub fn is_semieulerian(py: Python<'_>, g: &PyGraph) -> bool {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::is_semieulerian(inner).is_semieulerian)
+pub fn is_semieulerian(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::is_semieulerian(inner).is_semieulerian))
 }
 
 /// Return an Eulerian circuit as a list of edge tuples.
@@ -1067,21 +1295,22 @@ pub fn is_semieulerian(py: Python<'_>, g: &PyGraph) -> bool {
 #[pyo3(signature = (g, source=None))]
 pub fn eulerian_circuit(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     source: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
     let src = source
         .map(|s| node_key_to_string(py, s))
         .transpose()?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::eulerian_circuit(inner, src.as_deref()));
     match result {
         Some(r) => Ok(r
             .edges
             .iter()
-            .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
+            .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
             .collect()),
-        None => Err(NetworkXError::new_err("Graph is not Eulerian.")),
+        None => Err(NetworkXError::new_err("G is not Eulerian.")),
     }
 }
 
@@ -1090,21 +1319,22 @@ pub fn eulerian_circuit(
 #[pyo3(signature = (g, source=None))]
 pub fn eulerian_path(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     source: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let gr = extract_graph(g)?;
     let src = source
         .map(|s| node_key_to_string(py, s))
         .transpose()?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::eulerian_path(inner, src.as_deref()));
     match result {
         Some(r) => Ok(r
             .edges
             .iter()
-            .map(|(u, v)| (g.py_node_key(py, u), g.py_node_key(py, v)))
+            .map(|(u, v)| (gr.py_node_key(py, u), gr.py_node_key(py, v)))
             .collect()),
-        None => Err(NetworkXError::new_err("Graph has no Eulerian path.")),
+        None => Err(NetworkXError::new_err("G has no Eulerian path.")),
     }
 }
 
@@ -1117,39 +1347,43 @@ pub fn eulerian_path(
 #[pyo3(signature = (g, source, target, cutoff=None))]
 pub fn all_simple_paths(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     source: &Bound<'_, PyAny>,
     target: &Bound<'_, PyAny>,
     cutoff: Option<usize>,
 ) -> PyResult<Vec<Vec<PyObject>>> {
+    let gr = extract_graph(g)?;
     let s = node_key_to_string(py, source)?;
     let t = node_key_to_string(py, target)?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::all_simple_paths(inner, &s, &t, cutoff));
     Ok(result
         .paths
         .iter()
-        .map(|path| path.iter().map(|n| g.py_node_key(py, n)).collect())
+        .map(|path| path.iter().map(|n| gr.py_node_key(py, n)).collect())
         .collect())
 }
 
 /// Return a list of cycles forming a basis for the cycle space.
+/// Raises ``NetworkXNotImplemented`` on DiGraph.
 #[pyfunction]
 #[pyo3(signature = (g, root=None))]
 pub fn cycle_basis(
     py: Python<'_>,
-    g: &PyGraph,
+    g: &Bound<'_, PyAny>,
     root: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Vec<PyObject>>> {
+    let gr = extract_graph(g)?;
+    require_undirected(&gr, "cycle_basis")?;
     let r = root
         .map(|r| node_key_to_string(py, r))
         .transpose()?;
-    let inner = &g.inner;
+    let inner = gr.undirected();
     let result = py.allow_threads(|| fnx_algorithms::cycle_basis(inner, r.as_deref()));
     Ok(result
         .cycles
         .iter()
-        .map(|cycle| cycle.iter().map(|n| g.py_node_key(py, n)).collect())
+        .map(|cycle| cycle.iter().map(|n| gr.py_node_key(py, n)).collect())
         .collect())
 }
 
@@ -1159,17 +1393,23 @@ pub fn cycle_basis(
 
 /// Return the global efficiency of the graph.
 #[pyfunction]
-pub fn global_efficiency(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::global_efficiency(inner).efficiency)
+pub fn global_efficiency(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::global_efficiency(inner).efficiency))
 }
 
 /// Return the local efficiency of the graph.
 #[pyfunction]
-pub fn local_efficiency(py: Python<'_>, g: &PyGraph) -> f64 {
-    let inner = &g.inner;
-    py.allow_threads(|| fnx_algorithms::local_efficiency(inner).efficiency)
+pub fn local_efficiency(py: Python<'_>, g: &Bound<'_, PyAny>) -> PyResult<f64> {
+    let gr = extract_graph(g)?;
+    let inner = gr.undirected();
+    Ok(py.allow_threads(|| fnx_algorithms::local_efficiency(inner).efficiency))
 }
+
+// ===========================================================================
+// Registration
+// ===========================================================================
 
 /// Register all algorithm functions into the Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

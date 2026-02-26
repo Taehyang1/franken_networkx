@@ -9,3 +9,186 @@ Usage::
     nx.config.backend_priority = ["franken_networkx"]
     # All supported algorithms now dispatch to Rust.
 """
+
+import logging
+
+import franken_networkx as fnx
+
+log = logging.getLogger("franken_networkx.backend")
+
+# ---------------------------------------------------------------------------
+# Supported algorithm registry
+# ---------------------------------------------------------------------------
+
+# Maps NetworkX function name -> FrankenNetworkX callable.
+# Add new entries here as more algorithms are bound.
+_SUPPORTED_ALGORITHMS = {
+    # Shortest path
+    "shortest_path": fnx.shortest_path,
+    "shortest_path_length": fnx.shortest_path_length,
+    "has_path": fnx.has_path,
+    "average_shortest_path_length": fnx.average_shortest_path_length,
+    "dijkstra_path": fnx.dijkstra_path,
+    "bellman_ford_path": fnx.bellman_ford_path,
+    # Connectivity
+    "is_connected": fnx.is_connected,
+    "connected_components": fnx.connected_components,
+    "number_connected_components": fnx.number_connected_components,
+    "node_connectivity": fnx.node_connectivity,
+    "minimum_node_cut": fnx.minimum_node_cut,
+    "edge_connectivity": fnx.edge_connectivity,
+    "articulation_points": fnx.articulation_points,
+    "bridges": fnx.bridges,
+    # Centrality
+    "degree_centrality": fnx.degree_centrality,
+    "closeness_centrality": fnx.closeness_centrality,
+    "harmonic_centrality": fnx.harmonic_centrality,
+    "katz_centrality": fnx.katz_centrality,
+    "betweenness_centrality": fnx.betweenness_centrality,
+    "edge_betweenness_centrality": fnx.edge_betweenness_centrality,
+    "eigenvector_centrality": fnx.eigenvector_centrality,
+    "pagerank": fnx.pagerank,
+    "hits": fnx.hits,
+    "voterank": fnx.voterank,
+    "average_neighbor_degree": fnx.average_neighbor_degree,
+    "degree_assortativity_coefficient": fnx.degree_assortativity_coefficient,
+    # Clustering
+    "clustering": fnx.clustering,
+    "average_clustering": fnx.average_clustering,
+    "transitivity": fnx.transitivity,
+    "triangles": fnx.triangles,
+    "square_clustering": fnx.square_clustering,
+    # Cliques
+    "find_cliques": fnx.find_cliques,
+    "graph_clique_number": fnx.graph_clique_number,
+    # Matching
+    "maximal_matching": fnx.maximal_matching,
+    "max_weight_matching": fnx.max_weight_matching,
+    "min_weight_matching": fnx.min_weight_matching,
+    "min_edge_cover": fnx.min_edge_cover,
+    # Flow
+    "maximum_flow_value": fnx.maximum_flow_value,
+    "minimum_cut_value": fnx.minimum_cut_value,
+    # Distance / measures
+    "density": fnx.density,
+    "eccentricity": fnx.eccentricity,
+    "diameter": fnx.diameter,
+    "radius": fnx.radius,
+    "center": fnx.center,
+    "periphery": fnx.periphery,
+    # Tree / forest / bipartite / coloring / core
+    "is_tree": fnx.is_tree,
+    "is_forest": fnx.is_forest,
+    "is_bipartite": fnx.is_bipartite,
+    "greedy_color": fnx.greedy_color,
+    "core_number": fnx.core_number,
+    "minimum_spanning_tree": fnx.minimum_spanning_tree,
+    # Euler
+    "is_eulerian": fnx.is_eulerian,
+    "has_eulerian_path": fnx.has_eulerian_path,
+    "is_semieulerian": fnx.is_semieulerian,
+    "eulerian_circuit": fnx.eulerian_circuit,
+    "eulerian_path": fnx.eulerian_path,
+    # Paths / cycles
+    "all_simple_paths": fnx.all_simple_paths,
+    "cycle_basis": fnx.cycle_basis,
+    # Efficiency
+    "global_efficiency": fnx.global_efficiency,
+    "local_efficiency": fnx.local_efficiency,
+}
+
+
+# ---------------------------------------------------------------------------
+# Graph conversion helpers
+# ---------------------------------------------------------------------------
+
+def _nx_to_fnx(G):
+    """Convert a NetworkX Graph/DiGraph to a FrankenNetworkX Graph/DiGraph."""
+    if G.is_directed():
+        fg = fnx.DiGraph()
+    else:
+        fg = fnx.Graph()
+    for node, data in G.nodes(data=True):
+        fg.add_node(node, **data)
+    for u, v, data in G.edges(data=True):
+        fg.add_edge(u, v, **data)
+    fg.graph.update(G.graph)
+    return fg
+
+
+def _fnx_to_nx(fg):
+    """Convert a FrankenNetworkX Graph/DiGraph to a NetworkX Graph/DiGraph."""
+    import networkx as nx
+
+    if fg.is_directed():
+        G = nx.DiGraph()
+    else:
+        G = nx.Graph()
+    for node in fg.nodes:
+        G.add_node(node, **fg.nodes[node])
+    for u, v in fg.edges:
+        G.add_edge(u, v, **fg.edges[u, v])
+    G.graph.update(dict(fg.graph))
+    return G
+
+
+# ---------------------------------------------------------------------------
+# BackendInterface
+# ---------------------------------------------------------------------------
+
+class BackendInterface:
+    """NetworkX backend interface for FrankenNetworkX.
+
+    This class implements the dispatch protocol so that NetworkX can
+    transparently delegate supported algorithm calls to FrankenNetworkX's
+    Rust backend.
+    """
+
+    @staticmethod
+    def convert_from_nx(
+        G,
+        edge_attrs=None,
+        node_attrs=None,
+        preserve_edge_attrs=False,
+        preserve_node_attrs=False,
+        preserve_graph_attrs=False,
+        preserve_all_attrs=False,
+        name=None,
+        graph_name=None,
+    ):
+        """Convert a NetworkX graph to a FrankenNetworkX graph."""
+        if G.is_multigraph():
+            raise fnx.NetworkXNotImplemented(
+                "FrankenNetworkX does not yet support multigraphs."
+            )
+        return _nx_to_fnx(G)
+
+    @staticmethod
+    def convert_to_nx(result, *, name=None):
+        """Convert a FrankenNetworkX result back to NetworkX types."""
+        if isinstance(result, (fnx.Graph, fnx.DiGraph)):
+            return _fnx_to_nx(result)
+        return result
+
+    @staticmethod
+    def can_run(name, args, kwargs):
+        """Return True if this backend can run the named algorithm."""
+        if name not in _SUPPORTED_ALGORITHMS:
+            return False
+        # Multigraphs are not supported.
+        if args:
+            g = args[0]
+            if hasattr(g, "is_multigraph") and g.is_multigraph():
+                return False
+        return True
+
+    @staticmethod
+    def should_run(name, args, kwargs):
+        """Return True if this backend should run (performance heuristic)."""
+        return name in _SUPPORTED_ALGORITHMS
+
+    # Make algorithm functions available as attributes for dispatch
+    def __getattr__(self, name):
+        if name in _SUPPORTED_ALGORITHMS:
+            return _SUPPORTED_ALGORITHMS[name]
+        raise AttributeError(f"BackendInterface has no attribute '{name}'")

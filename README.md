@@ -4,7 +4,80 @@
   <img src="franken_networkx_illustration.webp" alt="FrankenNetworkX - clean-room memory-safe NetworkX reimplementation">
 </div>
 
-FrankenNetworkX is a clean-room Rust reimplementation targeting grand-scope excellence: semantic fidelity, mathematical rigor, operational safety, and profile-proven performance.
+FrankenNetworkX is a high-performance, Rust-backed drop-in replacement for [NetworkX](https://networkx.org/). Use it as a standalone library or as a NetworkX backend with zero code changes.
+
+## Quick Start
+
+```bash
+pip install franken-networkx
+```
+
+### Standalone usage
+
+```python
+import franken_networkx as fnx
+
+G = fnx.Graph()
+G.add_edge("a", "b", weight=3.0)
+G.add_edge("b", "c", weight=1.5)
+
+path = fnx.shortest_path(G, "a", "c", weight="weight")
+pr = fnx.pagerank(G)
+components = fnx.connected_components(G)
+```
+
+### NetworkX backend (zero code changes)
+
+```python
+import networkx as nx
+nx.config.backend_priority = ["franken_networkx"]
+
+# All supported algorithms now dispatch to Rust automatically
+G = nx.path_graph(100)
+nx.shortest_path(G, 0, 99)
+```
+
+## Supported Algorithms
+
+| Family | Functions |
+|--------|-----------|
+| Shortest path | `shortest_path`, `dijkstra_path`, `bellman_ford_path`, `has_path`, `shortest_path_length`, `average_shortest_path_length` |
+| Connectivity | `is_connected`, `connected_components`, `node_connectivity`, `edge_connectivity`, `bridges`, `articulation_points` |
+| Centrality | `pagerank`, `betweenness_centrality`, `closeness_centrality`, `eigenvector_centrality`, `degree_centrality`, `katz_centrality`, `hits` |
+| Clustering | `clustering`, `triangles`, `transitivity`, `average_clustering`, `square_clustering` |
+| Matching | `max_weight_matching`, `min_weight_matching`, `maximal_matching`, `min_edge_cover` |
+| Flow | `maximum_flow_value`, `minimum_cut_value` |
+| Trees | `minimum_spanning_tree`, `is_tree`, `is_forest` |
+| Euler | `eulerian_circuit`, `eulerian_path`, `is_eulerian`, `has_eulerian_path` |
+| Paths & Cycles | `all_simple_paths`, `cycle_basis` |
+| Bipartite | `is_bipartite`, `bipartite_sets` |
+| Coloring | `greedy_color` |
+| Distance | `diameter`, `radius`, `center`, `periphery`, `eccentricity`, `density` |
+| Efficiency | `global_efficiency`, `local_efficiency` |
+| Other | `core_number`, `voterank`, `find_cliques`, `degree_assortativity_coefficient`, `average_neighbor_degree`, `relabel_nodes` |
+| Generators | `path_graph`, `cycle_graph`, `star_graph`, `complete_graph`, `empty_graph`, `gnp_random_graph` |
+| I/O | `read_edgelist`, `write_edgelist`, `read_adjlist`, `write_adjlist`, `read_graphml`, `write_graphml`, `node_link_data`, `node_link_graph` |
+| NumPy/SciPy | `to_numpy_array`, `from_numpy_array`, `to_scipy_sparse_array`, `from_scipy_sparse_array` |
+| Conversion | `from_dict_of_dicts`, `to_dict_of_dicts`, `from_dict_of_lists`, `to_dict_of_lists`, `from_edgelist`, `to_edgelist`, `convert_node_labels_to_integers`, `from_pandas_edgelist`, `to_pandas_edgelist` |
+| Drawing | `draw`, `draw_spring`, `draw_circular`, `spring_layout`, `circular_layout` (delegates to NetworkX/matplotlib) |
+
+## Graph Types
+
+- `Graph` -- undirected graph
+- `DiGraph` -- directed graph (algorithms automatically convert to undirected where needed)
+
+## Requirements
+
+- Python 3.10+
+- No Rust toolchain needed for `pip install` (pre-built wheels provided)
+
+## Development
+
+```bash
+pip install maturin
+maturin develop --features pyo3/abi3-py310
+pytest tests/python/ -v
+```
 
 ## What Makes This Project Special
 
