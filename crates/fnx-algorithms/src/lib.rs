@@ -395,6 +395,133 @@ pub struct GreedyColorResult {
     pub witness: ComplexityWitness,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCoreNumber {
+    pub node: String,
+    pub core: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreNumberResult {
+    pub core_numbers: Vec<NodeCoreNumber>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeAvgNeighborDegree {
+    pub node: String,
+    pub avg_neighbor_degree: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AverageNeighborDegreeResult {
+    pub scores: Vec<NodeAvgNeighborDegree>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DegreeAssortativityResult {
+    pub coefficient: f64,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoterankResult {
+    pub ranked: Vec<String>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindCliquesResult {
+    /// Each inner Vec is a maximal clique (sorted node names), outer Vec sorted lexicographically.
+    pub cliques: Vec<Vec<String>>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphCliqueNumberResult {
+    /// Size of the largest maximal clique.
+    pub clique_number: usize,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeConnectivityResult {
+    pub value: usize,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MinimumNodeCutResult {
+    pub cut_nodes: Vec<String>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CycleBasisResult {
+    /// Each inner Vec is a cycle (list of node names forming the cycle).
+    pub cycles: Vec<Vec<String>>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalEfficiencyResult {
+    pub efficiency: f64,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalEfficiencyResult {
+    pub efficiency: f64,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MinEdgeCoverResult {
+    /// Edges forming the minimum edge cover, each as (left, right) sorted.
+    pub edges: Vec<(String, String)>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllSimplePathsResult {
+    /// Each inner Vec is a simple path (list of node names from source to target).
+    pub paths: Vec<Vec<String>>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IsEulerianResult {
+    pub is_eulerian: bool,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HasEulerianPathResult {
+    pub has_eulerian_path: bool,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IsSemiEulerianResult {
+    pub is_semieulerian: bool,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EulerianCircuitResult {
+    /// Edges of the Eulerian circuit in traversal order, each as (from, to).
+    pub edges: Vec<(String, String)>,
+    pub witness: ComplexityWitness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EulerianPathResult {
+    /// Edges of the Eulerian path in traversal order, each as (from, to).
+    pub edges: Vec<(String, String)>,
+    pub witness: ComplexityWitness,
+}
+
 #[derive(Debug, Clone)]
 struct FlowComputation {
     value: f64,
@@ -4052,21 +4179,1498 @@ pub fn bipartite_sets(graph: &Graph) -> BipartiteSetsResult {
     }
 }
 
+/// Computes the core number for every node using the iterative peeling algorithm.
+///
+/// The core number of a node v is the largest value k such that v belongs to the
+/// k-core (the maximal subgraph where every node has degree >= k).
+#[must_use]
+pub fn core_number(graph: &Graph) -> CoreNumberResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n == 0 {
+        return CoreNumberResult {
+            core_numbers: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "core_number".to_owned(),
+                complexity_claim: "O(|V| + |E|)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Compute initial degrees
+    let mut degree: HashMap<&str, usize> = HashMap::new();
+    for &node in &nodes {
+        let deg = graph
+            .neighbors_iter(node)
+            .map(|iter| iter.count())
+            .unwrap_or(0);
+        degree.insert(node, deg);
+    }
+
+    // Sort nodes by degree (ascending), with lexicographic tie-break
+    let mut sorted: Vec<&str> = nodes.clone();
+    sorted.sort_by(|a, b| degree[a].cmp(&degree[b]).then_with(|| a.cmp(b)));
+
+    // Build position map for bin-sort update
+    let mut pos: HashMap<&str, usize> = HashMap::new();
+    for (i, &node) in sorted.iter().enumerate() {
+        pos.insert(node, i);
+    }
+
+    // Bin boundaries
+    let max_deg = sorted.iter().map(|n| degree[n]).max().unwrap_or(0);
+    let mut bin_start: Vec<usize> = vec![0; max_deg + 1];
+    for &node in &sorted {
+        bin_start[degree[node]] += 1;
+    }
+    let mut cumsum = 0;
+    for start in &mut bin_start {
+        let count = *start;
+        *start = cumsum;
+        cumsum += count;
+    }
+
+    let mut core: HashMap<&str, usize> = HashMap::new();
+    let mut edges_scanned = 0usize;
+
+    // Peeling: process nodes in order of current degree
+    for i in 0..n {
+        let v = sorted[i];
+        core.insert(v, degree[v]);
+        if let Some(neighbors) = graph.neighbors_iter(v) {
+            for u in neighbors {
+                edges_scanned += 1;
+                if degree[u] > degree[v] {
+                    // Move u earlier in sorted order (decrease its effective degree)
+                    let du = degree[u];
+                    let pu = pos[u];
+                    let pw = bin_start[du];
+                    let w = sorted[pw];
+                    if u != w {
+                        // Swap positions of u and w
+                        sorted[pu] = w;
+                        sorted[pw] = u;
+                        pos.insert(u, pw);
+                        pos.insert(w, pu);
+                    }
+                    bin_start[du] += 1;
+                    degree.insert(u, du - 1);
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<NodeCoreNumber> = core
+        .into_iter()
+        .map(|(node, c)| NodeCoreNumber {
+            node: node.to_owned(),
+            core: c,
+        })
+        .collect();
+    result.sort_by(|a, b| a.node.cmp(&b.node));
+
+    CoreNumberResult {
+        core_numbers: result,
+        witness: ComplexityWitness {
+            algorithm: "core_number".to_owned(),
+            complexity_claim: "O(|V| + |E|)".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak: 0,
+        },
+    }
+}
+
+/// Computes the average neighbor degree for each node.
+///
+/// For node v with neighbors N(v), the average neighbor degree is:
+/// `mean(deg(u) for u in N(v))`, or 0.0 if deg(v) == 0.
+#[must_use]
+pub fn average_neighbor_degree(graph: &Graph) -> AverageNeighborDegreeResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n == 0 {
+        return AverageNeighborDegreeResult {
+            scores: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "average_neighbor_degree".to_owned(),
+                complexity_claim: "O(|V| * deg)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Precompute degrees
+    let degrees: HashMap<&str, usize> = nodes
+        .iter()
+        .map(|&node| {
+            let deg = graph
+                .neighbors_iter(node)
+                .map(|iter| iter.count())
+                .unwrap_or(0);
+            (node, deg)
+        })
+        .collect();
+
+    let mut edges_scanned = 0usize;
+    let mut scores: Vec<NodeAvgNeighborDegree> = Vec::with_capacity(n);
+
+    for &node in &nodes {
+        let deg = degrees[node];
+        if deg == 0 {
+            scores.push(NodeAvgNeighborDegree {
+                node: node.to_owned(),
+                avg_neighbor_degree: 0.0,
+            });
+            continue;
+        }
+        let mut sum_deg = 0usize;
+        if let Some(neighbors) = graph.neighbors_iter(node) {
+            for neighbor in neighbors {
+                edges_scanned += 1;
+                sum_deg += degrees[neighbor];
+            }
+        }
+        scores.push(NodeAvgNeighborDegree {
+            node: node.to_owned(),
+            avg_neighbor_degree: sum_deg as f64 / deg as f64,
+        });
+    }
+
+    scores.sort_by(|a, b| a.node.cmp(&b.node));
+
+    AverageNeighborDegreeResult {
+        scores,
+        witness: ComplexityWitness {
+            algorithm: "average_neighbor_degree".to_owned(),
+            complexity_claim: "O(|V| * deg)".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak: 0,
+        },
+    }
+}
+
+/// Computes the degree assortativity coefficient of the graph.
+///
+/// This is the Pearson correlation coefficient of degrees across edges.
+/// Returns 0.0 for graphs with fewer than 2 edges or zero variance in degree.
+#[must_use]
+pub fn degree_assortativity_coefficient(graph: &Graph) -> DegreeAssortativityResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    // Collect degree pairs for each edge — both directions per undirected edge
+    // (matches NetworkX's mixing-matrix approach for undirected graphs)
+    let mut degree_pairs: Vec<(f64, f64)> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut edges_scanned = 0usize;
+
+    // Precompute degrees
+    let degrees: HashMap<&str, usize> = nodes
+        .iter()
+        .map(|&node| {
+            let deg = graph
+                .neighbors_iter(node)
+                .map(|iter| iter.count())
+                .unwrap_or(0);
+            (node, deg)
+        })
+        .collect();
+
+    for &node in &nodes {
+        if let Some(neighbors) = graph.neighbors_iter(node) {
+            let deg_u = degrees[node];
+            for neighbor in neighbors {
+                let (left, right) = if node <= neighbor {
+                    (node, neighbor)
+                } else {
+                    (neighbor, node)
+                };
+                if seen.insert((left, right)) {
+                    edges_scanned += 1;
+                    let deg_v = degrees[neighbor];
+                    // Both directions for undirected edge
+                    degree_pairs.push((deg_u as f64, deg_v as f64));
+                    degree_pairs.push((deg_v as f64, deg_u as f64));
+                }
+            }
+        }
+    }
+
+    let m = degree_pairs.len();
+    if m < 2 {
+        return DegreeAssortativityResult {
+            coefficient: 0.0,
+            witness: ComplexityWitness {
+                algorithm: "degree_assortativity".to_owned(),
+                complexity_claim: "O(|E|)".to_owned(),
+                nodes_touched: n,
+                edges_scanned,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Pearson correlation of (deg_u, deg_v) across edges
+    let mf = m as f64;
+    let sum_x: f64 = degree_pairs.iter().map(|(x, _)| x).sum();
+    let sum_y: f64 = degree_pairs.iter().map(|(_, y)| y).sum();
+    let sum_xy: f64 = degree_pairs.iter().map(|(x, y)| x * y).sum();
+    let sum_x2: f64 = degree_pairs.iter().map(|(x, _)| x * x).sum();
+    let sum_y2: f64 = degree_pairs.iter().map(|(_, y)| y * y).sum();
+
+    let numerator = mf * sum_xy - sum_x * sum_y;
+    let denom_x = (mf * sum_x2 - sum_x * sum_x).sqrt();
+    let denom_y = (mf * sum_y2 - sum_y * sum_y).sqrt();
+    let denominator = denom_x * denom_y;
+
+    let coefficient = if denominator.abs() < 1e-15 {
+        0.0
+    } else {
+        numerator / denominator
+    };
+
+    DegreeAssortativityResult {
+        coefficient,
+        witness: ComplexityWitness {
+            algorithm: "degree_assortativity".to_owned(),
+            complexity_claim: "O(|E|)".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak: 0,
+        },
+    }
+}
+
+/// Computes VoteRank centrality — iterative voting to find influential spreaders.
+///
+/// Each round: every node votes for its best unranked neighbor (vote power
+/// initially 1.0). The node with the highest total vote is selected and its
+/// neighbors' vote powers are reduced by `1/avg_degree`. Repeats until no
+/// more nodes receive votes.
+#[must_use]
+pub fn voterank(graph: &Graph) -> VoterankResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n == 0 {
+        return VoterankResult {
+            ranked: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "voterank".to_owned(),
+                complexity_claim: "O(|V|^2)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let edge_count = graph.edge_count();
+    let avg_degree = if n > 0 {
+        (2.0 * edge_count as f64) / n as f64
+    } else {
+        0.0
+    };
+    let decay = if avg_degree > 0.0 {
+        1.0 / avg_degree
+    } else {
+        0.0
+    };
+
+    let mut vote_power: HashMap<&str, f64> = nodes.iter().map(|&v| (v, 1.0)).collect();
+    let mut ranked: Vec<String> = Vec::new();
+    let mut selected: HashSet<&str> = HashSet::new();
+    let mut edges_scanned = 0usize;
+
+    loop {
+        // Accumulate votes
+        let mut scores: HashMap<&str, f64> = HashMap::new();
+        for &node in &nodes {
+            if selected.contains(node) {
+                continue;
+            }
+            if let Some(neighbors) = graph.neighbors_iter(node) {
+                for neighbor in neighbors {
+                    edges_scanned += 1;
+                    if !selected.contains(neighbor) {
+                        *scores.entry(neighbor).or_insert(0.0) += vote_power[node];
+                    }
+                }
+            }
+        }
+
+        if scores.is_empty() {
+            break;
+        }
+
+        // Find node with max score; deterministic tie-break by node name (ascending)
+        let mut candidates: Vec<(&str, f64)> = scores.into_iter().collect();
+        candidates.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(b.0))
+        });
+        let best = candidates.first().copied();
+
+        let Some((winner, max_score)) = best else {
+            break;
+        };
+        if max_score <= 0.0 {
+            break;
+        }
+
+        ranked.push(winner.to_owned());
+        selected.insert(winner);
+
+        // Reduce vote power of winner's neighbors
+        vote_power.insert(winner, 0.0);
+        if let Some(neighbors) = graph.neighbors_iter(winner) {
+            for neighbor in neighbors {
+                if !selected.contains(neighbor) {
+                    let current = vote_power[neighbor];
+                    let new_power = (current - decay).max(0.0);
+                    vote_power.insert(neighbor, new_power);
+                }
+            }
+        }
+    }
+
+    VoterankResult {
+        ranked,
+        witness: ComplexityWitness {
+            algorithm: "voterank".to_owned(),
+            complexity_claim: "O(|V|^2)".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak: 0,
+        },
+    }
+}
+
+/// Enumerate all maximal cliques using the Bron-Kerbosch algorithm with pivoting.
+///
+/// Each clique is returned as a sorted `Vec<String>`. The outer vector is sorted
+/// lexicographically so output is deterministic regardless of internal iteration order.
+///
+/// Matches `networkx.algorithms.clique.find_cliques`:
+/// - Empty graph → empty vec
+/// - Isolated node → singleton clique `[node]`
+pub fn find_cliques(graph: &Graph) -> FindCliquesResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    let mut edges_scanned: usize = 0;
+
+    if n == 0 {
+        return FindCliquesResult {
+            cliques: vec![],
+            witness: ComplexityWitness {
+                algorithm: "find_cliques_bron_kerbosch".to_owned(),
+                complexity_claim: "O(3^(n/3))".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Build adjacency sets for fast neighbor lookup
+    let node_to_idx: HashMap<&str, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let mut adj: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    for i in 0..n {
+        if let Some(nbrs) = graph.neighbors_iter(nodes[i]) {
+            for nb in nbrs {
+                if let Some(&j) = node_to_idx.get(nb) {
+                    adj[i].insert(j);
+                    edges_scanned += 1;
+                }
+            }
+        }
+    }
+
+    let mut cliques: Vec<Vec<String>> = Vec::new();
+
+    // Iterative Bron-Kerbosch with pivoting
+    // Stack frame: (P, R, X)
+    let p_init: HashSet<usize> = (0..n).collect();
+    let r_init: HashSet<usize> = HashSet::new();
+    let x_init: HashSet<usize> = HashSet::new();
+
+    let mut stack: Vec<(HashSet<usize>, HashSet<usize>, HashSet<usize>)> = vec![(p_init, r_init, x_init)];
+    let mut peak_stack: usize = 1;
+
+    while let Some((p, r, x)) = stack.pop() {
+        if p.is_empty() && x.is_empty() {
+            // R is a maximal clique
+            let mut clique: Vec<String> = r.iter().map(|&i| nodes[i].to_owned()).collect();
+            clique.sort();
+            cliques.push(clique);
+            continue;
+        }
+        if p.is_empty() {
+            continue;
+        }
+
+        // Choose pivot: node in P ∪ X that maximizes |P ∩ N(pivot)|
+        let pivot = p.union(&x)
+            .max_by_key(|&&v| p.intersection(&adj[v]).count())
+            .copied()
+            .unwrap(); // safe: P is non-empty
+
+        // Candidates: P \ N(pivot)
+        let candidates: Vec<usize> = p.difference(&adj[pivot]).copied().collect();
+
+        let mut p_mut = p;
+        let mut x_mut = x;
+
+        for v in candidates {
+            let mut r_new = r.clone();
+            r_new.insert(v);
+            let p_new: HashSet<usize> = p_mut.intersection(&adj[v]).copied().collect();
+            let x_new: HashSet<usize> = x_mut.intersection(&adj[v]).copied().collect();
+            stack.push((p_new, r_new, x_new));
+            if stack.len() > peak_stack {
+                peak_stack = stack.len();
+            }
+            p_mut.remove(&v);
+            x_mut.insert(v);
+        }
+    }
+
+    cliques.sort();
+
+    FindCliquesResult {
+        cliques,
+        witness: ComplexityWitness {
+            algorithm: "find_cliques_bron_kerbosch".to_owned(),
+            complexity_claim: "O(3^(n/3))".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak: peak_stack,
+        },
+    }
+}
+
+/// Return the size of the largest maximal clique (the graph's clique number).
+///
+/// Matches `networkx.algorithms.clique.graph_clique_number`.
+/// Empty graph → 0.
+pub fn graph_clique_number(graph: &Graph) -> GraphCliqueNumberResult {
+    let result = find_cliques(graph);
+    let clique_number = result.cliques.iter().map(|c| c.len()).max().unwrap_or(0);
+    GraphCliqueNumberResult {
+        clique_number,
+        witness: result.witness,
+    }
+}
+
+/// Edmonds-Karp max-flow on a HashMap-based auxiliary directed graph.
+/// Returns (flow_value, residual).
+fn aux_max_flow(
+    residual: &mut HashMap<String, HashMap<String, f64>>,
+    source: &str,
+    sink: &str,
+    stats: &mut (usize, usize, usize),
+) -> f64 {
+    let mut total_flow = 0.0_f64;
+    loop {
+        let mut predecessor: HashMap<String, String> = HashMap::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        queue.push_back(source.to_owned());
+        visited.insert(source.to_owned());
+        stats.0 += 1;
+        stats.2 = stats.2.max(queue.len());
+        let mut reached_sink = false;
+        while let Some(current) = queue.pop_front() {
+            let mut neighbors: Vec<String> = residual
+                .get(&current)
+                .map(|caps| caps.keys().cloned().collect())
+                .unwrap_or_default();
+            neighbors.sort_unstable();
+            for neighbor in neighbors {
+                stats.1 += 1;
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                let cap = residual
+                    .get(&current)
+                    .and_then(|caps| caps.get(&neighbor))
+                    .copied()
+                    .unwrap_or(0.0);
+                if cap <= 0.0 {
+                    continue;
+                }
+                predecessor.insert(neighbor.clone(), current.clone());
+                visited.insert(neighbor.clone());
+                stats.0 += 1;
+                if neighbor == sink {
+                    reached_sink = true;
+                    break;
+                }
+                queue.push_back(neighbor);
+                stats.2 = stats.2.max(queue.len());
+            }
+            if reached_sink {
+                break;
+            }
+        }
+        if !reached_sink {
+            break;
+        }
+        // trace bottleneck
+        let mut bottleneck = f64::INFINITY;
+        let mut cursor = sink.to_owned();
+        while cursor != source {
+            let Some(prev) = predecessor.get(&cursor) else {
+                bottleneck = 0.0;
+                break;
+            };
+            let available = residual
+                .get(prev)
+                .and_then(|caps| caps.get(&cursor))
+                .copied()
+                .unwrap_or(0.0);
+            bottleneck = bottleneck.min(available);
+            cursor = prev.clone();
+        }
+        if bottleneck <= 0.0 || !bottleneck.is_finite() {
+            break;
+        }
+        // update residual
+        let mut cursor = sink.to_owned();
+        while cursor != source {
+            let prev = predecessor.get(&cursor).unwrap().clone();
+            *residual
+                .entry(prev.clone())
+                .or_default()
+                .entry(cursor.clone())
+                .or_insert(0.0) -= bottleneck;
+            *residual
+                .entry(cursor.clone())
+                .or_default()
+                .entry(prev.clone())
+                .or_insert(0.0) += bottleneck;
+            cursor = prev;
+        }
+        total_flow += bottleneck;
+    }
+    total_flow
+}
+
+/// Build auxiliary directed graph for node connectivity:
+/// Each node v → v_in, v_out with capacity 1.0.
+/// Each original edge (u,v) → u_out→v_in and v_out→u_in with large capacity.
+fn build_node_split_auxiliary(
+    graph: &Graph,
+) -> HashMap<String, HashMap<String, f64>> {
+    let nodes = graph.nodes_ordered();
+    let large_cap = (nodes.len() + 1) as f64;
+    let mut residual: HashMap<String, HashMap<String, f64>> = HashMap::new();
+
+    for node in &nodes {
+        let n_in = format!("{node}_in");
+        let n_out = format!("{node}_out");
+        residual.entry(n_in.clone()).or_default();
+        residual.entry(n_out.clone()).or_default();
+        // internal edge: n_in → n_out with capacity 1
+        residual
+            .entry(n_in.clone())
+            .or_default()
+            .insert(n_out.clone(), 1.0);
+        // reverse for residual
+        residual
+            .entry(n_out.clone())
+            .or_default()
+            .entry(n_in.clone())
+            .or_insert(0.0);
+    }
+
+    for node in &nodes {
+        let n_out = format!("{node}_out");
+        if let Some(nbrs) = graph.neighbors_iter(node) {
+            for nb in nbrs {
+                // Skip self-loops — NetworkX ignores them in connectivity
+                if nb == *node {
+                    continue;
+                }
+                let nb_in = format!("{nb}_in");
+                // u_out → v_in with large capacity
+                residual
+                    .entry(n_out.clone())
+                    .or_default()
+                    .insert(nb_in.clone(), large_cap);
+                // reverse for residual
+                residual
+                    .entry(nb_in.clone())
+                    .or_default()
+                    .entry(n_out.clone())
+                    .or_insert(0.0);
+            }
+        }
+    }
+
+    residual
+}
+
+/// Compute node connectivity between two specific nodes s and t.
+///
+/// Uses node-splitting + Edmonds-Karp max-flow on auxiliary graph.
+/// Matches `networkx.algorithms.connectivity.node_connectivity(G, s, t)`.
+pub fn node_connectivity(
+    graph: &Graph,
+    source: &str,
+    sink: &str,
+) -> NodeConnectivityResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    if !graph.has_node(source) || !graph.has_node(sink) || source == sink {
+        return NodeConnectivityResult {
+            value: 0,
+            witness: ComplexityWitness {
+                algorithm: "node_connectivity".to_owned(),
+                complexity_claim: "O(|V| * |E|^2)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut residual = build_node_split_auxiliary(graph);
+    let s_out = format!("{source}_out");
+    let t_in = format!("{sink}_in");
+
+    let mut stats = (0_usize, 0_usize, 0_usize);
+    let flow = aux_max_flow(&mut residual, &s_out, &t_in, &mut stats);
+
+    NodeConnectivityResult {
+        value: flow as usize,
+        witness: ComplexityWitness {
+            algorithm: "node_connectivity".to_owned(),
+            complexity_claim: "O(|V| * |E|^2)".to_owned(),
+            nodes_touched: n,
+            edges_scanned: stats.1,
+            queue_peak: stats.2,
+        },
+    }
+}
+
+/// Compute global node connectivity: minimum s-t node connectivity over all pairs.
+///
+/// Algorithm 11 from Esfahanian: pick min-degree node v, start with K = deg(v),
+/// check non-neighbors of v, then non-adjacent pairs of neighbors of v.
+/// Matches `networkx.algorithms.connectivity.node_connectivity(G)`.
+pub fn global_node_connectivity(graph: &Graph) -> NodeConnectivityResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    if n <= 1 {
+        return NodeConnectivityResult {
+            value: 0,
+            witness: ComplexityWitness {
+                algorithm: "global_node_connectivity".to_owned(),
+                complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+                nodes_touched: n,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Check connectivity first
+    if !is_connected(graph).is_connected {
+        return NodeConnectivityResult {
+            value: 0,
+            witness: ComplexityWitness {
+                algorithm: "global_node_connectivity".to_owned(),
+                complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+                nodes_touched: n,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut total_edges_scanned = 0_usize;
+    let mut max_queue_peak = 0_usize;
+
+    // Pick node with minimum degree
+    let v = nodes
+        .iter()
+        .min_by_key(|node| {
+            graph
+                .neighbors_iter(node)
+                .map(|it| it.count())
+                .unwrap_or(0)
+        })
+        .unwrap();
+
+    let v_neighbors: HashSet<&str> = graph
+        .neighbors_iter(v)
+        .map(|it| it.collect())
+        .unwrap_or_default();
+
+    // K starts at min degree
+    let mut k = v_neighbors.len();
+
+    // Check non-neighbors of v
+    for w in &nodes {
+        if *w == *v || v_neighbors.contains(*w) {
+            continue;
+        }
+        let result = node_connectivity(graph, v, w);
+        total_edges_scanned += result.witness.edges_scanned;
+        max_queue_peak = max_queue_peak.max(result.witness.queue_peak);
+        if result.value < k {
+            k = result.value;
+        }
+    }
+
+    // Check non-adjacent pairs of neighbors of v (sorted for deterministic witness values)
+    let mut v_nbr_vec: Vec<&str> = v_neighbors.iter().copied().collect();
+    v_nbr_vec.sort_unstable();
+    for i in 0..v_nbr_vec.len() {
+        for j in (i + 1)..v_nbr_vec.len() {
+            let x = v_nbr_vec[i];
+            let y = v_nbr_vec[j];
+            // Skip if x and y are adjacent
+            let x_neighbors: HashSet<&str> = graph
+                .neighbors_iter(x)
+                .map(|it| it.collect())
+                .unwrap_or_default();
+            if x_neighbors.contains(y) {
+                continue;
+            }
+            let result = node_connectivity(graph, x, y);
+            total_edges_scanned += result.witness.edges_scanned;
+            max_queue_peak = max_queue_peak.max(result.witness.queue_peak);
+            if result.value < k {
+                k = result.value;
+            }
+        }
+    }
+
+    NodeConnectivityResult {
+        value: k,
+        witness: ComplexityWitness {
+            algorithm: "global_node_connectivity".to_owned(),
+            complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+            nodes_touched: n,
+            edges_scanned: total_edges_scanned,
+            queue_peak: max_queue_peak,
+        },
+    }
+}
+
+/// Compute minimum s-t node cut: the smallest set of nodes whose removal disconnects s from t.
+///
+/// Uses node-splitting + Edmonds-Karp, then BFS on residual to find min-cut nodes.
+/// Matches `networkx.algorithms.connectivity.minimum_node_cut(G, s, t)`.
+pub fn minimum_node_cut(
+    graph: &Graph,
+    source: &str,
+    sink: &str,
+) -> MinimumNodeCutResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    if !graph.has_node(source) || !graph.has_node(sink) || source == sink {
+        return MinimumNodeCutResult {
+            cut_nodes: vec![],
+            witness: ComplexityWitness {
+                algorithm: "minimum_node_cut".to_owned(),
+                complexity_claim: "O(|V| * |E|^2)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut residual = build_node_split_auxiliary(graph);
+    let s_out = format!("{source}_out");
+    let t_in = format!("{sink}_in");
+
+    let mut stats = (0_usize, 0_usize, 0_usize);
+    let _flow = aux_max_flow(&mut residual, &s_out, &t_in, &mut stats);
+
+    // BFS from s_out on residual to find reachable set
+    let mut visited = HashSet::<String>::new();
+    let mut queue = VecDeque::<String>::new();
+    queue.push_back(s_out.clone());
+    visited.insert(s_out);
+
+    while let Some(current) = queue.pop_front() {
+        let neighbors: Vec<String> = residual
+            .get(&current)
+            .map(|caps| caps.keys().cloned().collect())
+            .unwrap_or_default();
+        for nb in neighbors {
+            if visited.contains(&nb) {
+                continue;
+            }
+            let cap = residual
+                .get(&current)
+                .and_then(|caps| caps.get(&nb))
+                .copied()
+                .unwrap_or(0.0);
+            if cap > 0.0 {
+                visited.insert(nb.clone());
+                queue.push_back(nb);
+            }
+        }
+    }
+
+    // Cut nodes are those where v_in is reachable but v_out is not (saturated internal edge)
+    // Exclude source and sink from the cut set
+    let mut cut_nodes: Vec<String> = Vec::new();
+    for node in &nodes {
+        if *node == source || *node == sink {
+            continue;
+        }
+        let n_in = format!("{node}_in");
+        let n_out = format!("{node}_out");
+        if visited.contains(&n_in) && !visited.contains(&n_out) {
+            cut_nodes.push((*node).to_owned());
+        }
+    }
+    cut_nodes.sort();
+
+    MinimumNodeCutResult {
+        cut_nodes,
+        witness: ComplexityWitness {
+            algorithm: "minimum_node_cut".to_owned(),
+            complexity_claim: "O(|V| * |E|^2)".to_owned(),
+            nodes_touched: n,
+            edges_scanned: stats.1,
+            queue_peak: stats.2,
+        },
+    }
+}
+
+/// Compute global minimum node cut: the smallest set of nodes whose removal disconnects the graph.
+///
+/// Algorithm 11 from Esfahanian: pick min-degree node v, start with cut = neighbors(v),
+/// check non-neighbors of v, then non-adjacent pairs of neighbors of v.
+/// Matches `networkx.algorithms.connectivity.minimum_node_cut(G)`.
+pub fn global_minimum_node_cut(graph: &Graph) -> MinimumNodeCutResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    if n <= 1 {
+        return MinimumNodeCutResult {
+            cut_nodes: vec![],
+            witness: ComplexityWitness {
+                algorithm: "global_minimum_node_cut".to_owned(),
+                complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+                nodes_touched: n,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    // Disconnected graph: NetworkX raises error; we return empty cut
+    if !is_connected(graph).is_connected {
+        return MinimumNodeCutResult {
+            cut_nodes: vec![],
+            witness: ComplexityWitness {
+                algorithm: "global_minimum_node_cut".to_owned(),
+                complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+                nodes_touched: n,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut total_edges_scanned = 0_usize;
+    let mut max_queue_peak = 0_usize;
+
+    // Pick node with minimum degree
+    let v = nodes
+        .iter()
+        .min_by_key(|node| {
+            graph
+                .neighbors_iter(node)
+                .map(|it| it.count())
+                .unwrap_or(0)
+        })
+        .unwrap();
+
+    let v_neighbors: HashSet<&str> = graph
+        .neighbors_iter(v)
+        .map(|it| it.collect())
+        .unwrap_or_default();
+
+    // Initial min_cut = all neighbors of v
+    let mut min_cut: Vec<String> = v_neighbors.iter().map(|s| (*s).to_owned()).collect();
+    min_cut.sort();
+
+    // Check non-neighbors of v
+    for w in &nodes {
+        if *w == *v || v_neighbors.contains(*w) {
+            continue;
+        }
+        let result = minimum_node_cut(graph, v, w);
+        total_edges_scanned += result.witness.edges_scanned;
+        max_queue_peak = max_queue_peak.max(result.witness.queue_peak);
+        if result.cut_nodes.len() < min_cut.len() {
+            min_cut = result.cut_nodes;
+        }
+    }
+
+    // Check non-adjacent pairs of neighbors of v (sorted for determinism)
+    let mut v_nbr_vec: Vec<&str> = v_neighbors.iter().copied().collect();
+    v_nbr_vec.sort_unstable();
+    for i in 0..v_nbr_vec.len() {
+        for j in (i + 1)..v_nbr_vec.len() {
+            let x = v_nbr_vec[i];
+            let y = v_nbr_vec[j];
+            let x_neighbors: HashSet<&str> = graph
+                .neighbors_iter(x)
+                .map(|it| it.collect())
+                .unwrap_or_default();
+            if x_neighbors.contains(y) {
+                continue;
+            }
+            let result = minimum_node_cut(graph, x, y);
+            total_edges_scanned += result.witness.edges_scanned;
+            max_queue_peak = max_queue_peak.max(result.witness.queue_peak);
+            if result.cut_nodes.len() < min_cut.len() {
+                min_cut = result.cut_nodes;
+            }
+        }
+    }
+
+    min_cut.sort();
+
+    MinimumNodeCutResult {
+        cut_nodes: min_cut,
+        witness: ComplexityWitness {
+            algorithm: "global_minimum_node_cut".to_owned(),
+            complexity_claim: "O(|V|^2 * |V| * |E|^2)".to_owned(),
+            nodes_touched: n,
+            edges_scanned: total_edges_scanned,
+            queue_peak: max_queue_peak,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cycle_basis — Paton's algorithm for fundamental cycle basis
+// ---------------------------------------------------------------------------
+
+/// Compute a cycle basis for an undirected graph using Paton's algorithm.
+///
+/// A cycle basis is a minimal set of cycles such that any cycle in the graph
+/// can be expressed as a symmetric difference (XOR) of cycles from the basis.
+/// Each cycle is returned as a list of node names.
+#[must_use]
+pub fn cycle_basis(graph: &Graph, root: Option<&str>) -> CycleBasisResult {
+    let all_nodes = graph.nodes_ordered();
+    let n = all_nodes.len();
+    if n == 0 {
+        return CycleBasisResult {
+            cycles: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "cycle_basis".to_owned(),
+                complexity_claim: "O(|V| + |E|)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut gnodes: HashSet<&str> = all_nodes.iter().copied().collect();
+    let mut cycles: Vec<Vec<String>> = Vec::new();
+    let mut nodes_touched = 0usize;
+    let mut edges_scanned = 0usize;
+    let mut stack_peak = 0usize;
+
+    let mut current_root: Option<&str> = root;
+
+    while !gnodes.is_empty() {
+        // Pick root: use provided root first time, then smallest remaining node
+        let r = if let Some(r) = current_root.take() {
+            gnodes.remove(r);
+            r
+        } else {
+            // Pick lexicographically smallest remaining node for determinism
+            let mut remaining: Vec<&str> = gnodes.iter().copied().collect();
+            remaining.sort_unstable();
+            let r = remaining[0];
+            gnodes.remove(r);
+            r
+        };
+
+        let mut stack: Vec<&str> = vec![r];
+        let mut pred: HashMap<&str, &str> = HashMap::new();
+        pred.insert(r, r);
+        let mut used: HashMap<&str, HashSet<&str>> = HashMap::new();
+        used.insert(r, HashSet::new());
+
+        while let Some(z) = stack.pop() {
+            nodes_touched += 1;
+            stack_peak = stack_peak.max(stack.len() + 1);
+            let z_used = used[z].clone();
+
+            // Get sorted neighbors for deterministic traversal
+            let mut nbrs: Vec<&str> = graph
+                .neighbors_iter(z)
+                .map(|iter| iter.collect())
+                .unwrap_or_default();
+            nbrs.sort_unstable();
+
+            for nbr in nbrs {
+                edges_scanned += 1;
+                if !used.contains_key(nbr) {
+                    // New node — extend spanning tree
+                    pred.insert(nbr, z);
+                    stack.push(nbr);
+                    let mut nbr_used = HashSet::new();
+                    nbr_used.insert(z);
+                    used.insert(nbr, nbr_used);
+                } else if nbr == z {
+                    // Self loop — single-node cycle
+                    cycles.push(vec![z.to_owned()]);
+                } else if !z_used.contains(nbr) {
+                    // Found a cycle — trace back through predecessors
+                    let pn = used[nbr].clone();
+                    let mut cycle: Vec<&str> = vec![nbr, z];
+                    let mut p = pred[z];
+                    while !pn.contains(p) {
+                        cycle.push(p);
+                        p = pred[p];
+                    }
+                    cycle.push(p);
+                    cycles.push(cycle.iter().map(|s| (*s).to_owned()).collect());
+                    used.get_mut(nbr).unwrap().insert(z);
+                }
+            }
+        }
+
+        // Remove all visited nodes from gnodes
+        for &node in pred.keys() {
+            gnodes.remove(node);
+        }
+    }
+
+    // Sort cycles for deterministic output: sort each cycle internally, then sort outer list
+    for cycle in &mut cycles {
+        // Rotate so smallest element is first, matching NetworkX convention
+        if let Some(min_pos) = cycle
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.cmp(b.1))
+            .map(|(i, _)| i)
+        {
+            cycle.rotate_left(min_pos);
+        }
+    }
+    cycles.sort();
+
+    CycleBasisResult {
+        cycles,
+        witness: ComplexityWitness {
+            algorithm: "cycle_basis".to_owned(),
+            complexity_claim: "O(|V| + |E|)".to_owned(),
+            nodes_touched,
+            edges_scanned,
+            queue_peak: stack_peak,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// all_simple_paths — DFS enumeration of simple paths
+// ---------------------------------------------------------------------------
+
+/// Enumerate all simple (loopless) paths from source to target.
+///
+/// An optional `cutoff` limits the maximum path length (number of edges).
+/// Without a cutoff, this can be exponential in the number of paths.
+#[must_use]
+pub fn all_simple_paths(
+    graph: &Graph,
+    source: &str,
+    target: &str,
+    cutoff: Option<usize>,
+) -> AllSimplePathsResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+
+    if !nodes.contains(&source) || !nodes.contains(&target) {
+        return AllSimplePathsResult {
+            paths: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "all_simple_paths".to_owned(),
+                complexity_claim: "O(|V|! / (|V|-k)!)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let max_depth = cutoff.unwrap_or(n.saturating_sub(1));
+    let mut paths: Vec<Vec<String>> = Vec::new();
+    let mut nodes_touched = 0usize;
+    let mut edges_scanned = 0usize;
+    let mut stack_peak = 0usize;
+
+    // DFS with explicit stack: (node, visited_set, current_path, neighbor_index)
+    // Using iterative DFS for stack safety
+    let mut visited: HashSet<&str> = HashSet::new();
+    visited.insert(source);
+
+    // Stack element: (node, sorted_neighbors, neighbor_index)
+    let mut nbr_cache: HashMap<&str, Vec<&str>> = HashMap::new();
+    for &node in &nodes {
+        let mut nbrs: Vec<&str> = graph
+            .neighbors_iter(node)
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+        nbrs.sort_unstable();
+        nbr_cache.insert(node, nbrs);
+    }
+
+    let mut stack: Vec<(&str, usize)> = vec![(source, 0)];
+    let mut path: Vec<&str> = vec![source];
+
+    while !stack.is_empty() {
+        stack_peak = stack_peak.max(stack.len());
+        let (node, idx) = *stack.last().unwrap();
+        let nbrs = &nbr_cache[node];
+
+        if idx < nbrs.len() {
+            let next = nbrs[idx];
+            stack.last_mut().unwrap().1 += 1;
+            edges_scanned += 1;
+
+            if next == target {
+                nodes_touched += 1;
+                let mut found_path: Vec<String> =
+                    path.iter().map(|s| (*s).to_owned()).collect();
+                found_path.push(target.to_owned());
+                paths.push(found_path);
+            } else if !visited.contains(next) && path.len() < max_depth {
+                nodes_touched += 1;
+                visited.insert(next);
+                path.push(next);
+                stack.push((next, 0));
+            }
+        } else {
+            // Backtrack
+            stack.pop();
+            if let Some(removed) = path.pop() {
+                visited.remove(removed);
+            }
+        }
+    }
+
+    // Sort paths for deterministic output
+    paths.sort();
+
+    AllSimplePathsResult {
+        paths,
+        witness: ComplexityWitness {
+            algorithm: "all_simple_paths".to_owned(),
+            complexity_claim: "O(|V|! / (|V|-k)!)".to_owned(),
+            nodes_touched,
+            edges_scanned,
+            queue_peak: stack_peak,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// global_efficiency / local_efficiency — Latora & Marchiori (2001)
+// ---------------------------------------------------------------------------
+
+/// Compute the average global efficiency of the graph.
+///
+/// The efficiency of a pair of nodes is 1 / shortest_path_distance.
+/// Global efficiency is the average over all ordered pairs (u, v), u != v.
+/// Edge weights are ignored (unweighted shortest paths).
+#[must_use]
+pub fn global_efficiency(graph: &Graph) -> GlobalEfficiencyResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n < 2 {
+        return GlobalEfficiencyResult {
+            efficiency: 0.0,
+            witness: ComplexityWitness {
+                algorithm: "global_efficiency".to_owned(),
+                complexity_claim: "O(|V| * (|V| + |E|))".to_owned(),
+                nodes_touched: n,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let denom = n * (n - 1);
+    let mut total_eff = 0.0f64;
+    let mut total_edges_scanned = 0usize;
+    let mut max_queue_peak = 0usize;
+
+    // BFS from each node to compute all shortest path distances
+    for &source in &nodes {
+        let mut dist: HashMap<&str, usize> = HashMap::new();
+        dist.insert(source, 0);
+        let mut queue: VecDeque<&str> = VecDeque::new();
+        queue.push_back(source);
+
+        while let Some(current) = queue.pop_front() {
+            let d = dist[current];
+            let mut nbrs: Vec<&str> = graph
+                .neighbors_iter(current)
+                .map(|iter| iter.collect())
+                .unwrap_or_default();
+            nbrs.sort_unstable();
+
+            for nbr in nbrs {
+                total_edges_scanned += 1;
+                if !dist.contains_key(nbr) {
+                    dist.insert(nbr, d + 1);
+                    queue.push_back(nbr);
+                    max_queue_peak = max_queue_peak.max(queue.len());
+                }
+            }
+        }
+
+        // Sum inverse distances for this source
+        for (&target, &d) in &dist {
+            if target != source && d > 0 {
+                total_eff += 1.0 / d as f64;
+            }
+        }
+    }
+
+    let efficiency = total_eff / denom as f64;
+
+    GlobalEfficiencyResult {
+        efficiency,
+        witness: ComplexityWitness {
+            algorithm: "global_efficiency".to_owned(),
+            complexity_claim: "O(|V| * (|V| + |E|))".to_owned(),
+            nodes_touched: n,
+            edges_scanned: total_edges_scanned,
+            queue_peak: max_queue_peak,
+        },
+    }
+}
+
+/// Compute the average local efficiency of the graph.
+///
+/// Local efficiency of a node v is the global efficiency of the subgraph
+/// induced by v's neighbors (not including v itself).
+/// Average local efficiency is the mean over all nodes.
+#[must_use]
+pub fn local_efficiency(graph: &Graph) -> LocalEfficiencyResult {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n == 0 {
+        return LocalEfficiencyResult {
+            efficiency: 0.0,
+            witness: ComplexityWitness {
+                algorithm: "local_efficiency".to_owned(),
+                complexity_claim: "O(|V| * d_max * (d_max + |E_sub|))".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        };
+    }
+
+    let mut total_eff = 0.0f64;
+    let mut total_edges_scanned = 0usize;
+    let mut max_queue_peak = 0usize;
+
+    for &v in &nodes {
+        // Get neighbors of v
+        let nbrs: HashSet<&str> = graph
+            .neighbors_iter(v)
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+
+        let nbr_count = nbrs.len();
+        if nbr_count < 2 {
+            // Subgraph with 0 or 1 nodes has efficiency 0
+            continue;
+        }
+
+        let denom = nbr_count * (nbr_count - 1);
+        let mut sub_eff = 0.0f64;
+
+        // BFS from each neighbor within the induced subgraph
+        for &source in &nbrs {
+            let mut dist: HashMap<&str, usize> = HashMap::new();
+            dist.insert(source, 0);
+            let mut queue: VecDeque<&str> = VecDeque::new();
+            queue.push_back(source);
+
+            while let Some(current) = queue.pop_front() {
+                let d = dist[current];
+                let mut cur_nbrs: Vec<&str> = graph
+                    .neighbors_iter(current)
+                    .map(|iter| iter.collect())
+                    .unwrap_or_default();
+                cur_nbrs.sort_unstable();
+
+                for nbr in cur_nbrs {
+                    total_edges_scanned += 1;
+                    // Only traverse within the induced subgraph of v's neighbors
+                    if nbrs.contains(nbr) && !dist.contains_key(nbr) {
+                        dist.insert(nbr, d + 1);
+                        queue.push_back(nbr);
+                        max_queue_peak = max_queue_peak.max(queue.len());
+                    }
+                }
+            }
+
+            for (&target, &d) in &dist {
+                if target != source && d > 0 {
+                    sub_eff += 1.0 / d as f64;
+                }
+            }
+        }
+
+        total_eff += sub_eff / denom as f64;
+    }
+
+    let efficiency = total_eff / n as f64;
+
+    LocalEfficiencyResult {
+        efficiency,
+        witness: ComplexityWitness {
+            algorithm: "local_efficiency".to_owned(),
+            complexity_claim: "O(|V| * d_max * (d_max + |E_sub|))".to_owned(),
+            nodes_touched: n,
+            edges_scanned: total_edges_scanned,
+            queue_peak: max_queue_peak,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// min_edge_cover — minimum cardinality edge cover via maximum matching
+// ---------------------------------------------------------------------------
+
+/// Compute a minimum edge cover of the graph.
+///
+/// An edge cover is a set of edges such that every node is incident to at least one edge.
+/// Returns `None` if the graph has isolated nodes (no edge cover exists).
+/// Uses maximum matching + greedy extension.
+#[must_use]
+pub fn min_edge_cover(graph: &Graph) -> Option<MinEdgeCoverResult> {
+    let nodes = graph.nodes_ordered();
+    let n = nodes.len();
+    if n == 0 {
+        return Some(MinEdgeCoverResult {
+            edges: Vec::new(),
+            witness: ComplexityWitness {
+                algorithm: "min_edge_cover".to_owned(),
+                complexity_claim: "O(|V|^3)".to_owned(),
+                nodes_touched: 0,
+                edges_scanned: 0,
+                queue_peak: 0,
+            },
+        });
+    }
+
+    // Check for isolated nodes
+    for &node in &nodes {
+        let deg = graph
+            .neighbors_iter(node)
+            .map(|iter| iter.count())
+            .unwrap_or(0);
+        if deg == 0 {
+            return None; // No edge cover exists
+        }
+    }
+
+    // Get maximum matching using blossom algorithm (maxcardinality=true)
+    let matching = max_weight_matching(graph, true, "weight");
+    let mut cover: HashSet<(String, String)> = HashSet::new();
+    let mut covered_nodes: HashSet<String> = HashSet::new();
+
+    for (left, right) in &matching.matching {
+        let (l, r): (String, String) = if left <= right {
+            (left.clone(), right.clone())
+        } else {
+            (right.clone(), left.clone())
+        };
+        covered_nodes.insert(l.clone());
+        covered_nodes.insert(r.clone());
+        cover.insert((l, r));
+    }
+
+    // Greedily cover remaining uncovered nodes
+    for &node in &nodes {
+        if covered_nodes.contains(node) {
+            continue;
+        }
+        // Pick the lexicographically smallest neighbor for determinism
+        let mut nbrs: Vec<&str> = graph
+            .neighbors_iter(node)
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+        nbrs.sort_unstable();
+        if let Some(&nbr) = nbrs.first() {
+            let (l, r) = if node <= nbr {
+                (node.to_owned(), nbr.to_owned())
+            } else {
+                (nbr.to_owned(), node.to_owned())
+            };
+            covered_nodes.insert(node.to_owned());
+            cover.insert((l, r));
+        }
+    }
+
+    let mut edges: Vec<(String, String)> = cover.into_iter().collect();
+    edges.sort();
+
+    let edges_scanned = matching.witness.edges_scanned;
+    let queue_peak = matching.witness.queue_peak;
+
+    Some(MinEdgeCoverResult {
+        edges,
+        witness: ComplexityWitness {
+            algorithm: "min_edge_cover".to_owned(),
+            complexity_claim: "O(|V|^3)".to_owned(),
+            nodes_touched: n,
+            edges_scanned,
+            queue_peak,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CGSE_WITNESS_LEDGER_PATH, CGSE_WITNESS_POLICY_SPEC_PATH, CentralityScore,
-        ComplexityWitness, articulation_points, bellman_ford_shortest_paths,
+        ComplexityWitness, all_simple_paths, articulation_points, bellman_ford_shortest_paths,
         betweenness_centrality, bridges, cgse_witness_schema_version, closeness_centrality,
-        clustering_coefficient, connected_components, degree_centrality,
+        clustering_coefficient, connected_components, cycle_basis, degree_centrality,
         edge_betweenness_centrality,
         edge_connectivity_edmonds_karp, eigenvector_centrality,
-        global_edge_connectivity_edmonds_karp, global_minimum_edge_cut_edmonds_karp,
+        global_edge_connectivity_edmonds_karp, global_efficiency,
+        global_minimum_edge_cut_edmonds_karp,
         harmonic_centrality, hits_centrality, is_matching, is_maximal_matching,
-        is_perfect_matching, katz_centrality, max_flow_edmonds_karp, max_weight_matching,
-        maximal_matching, min_weight_matching, minimum_cut_edmonds_karp,
-        minimum_st_edge_cut_edmonds_karp, multi_source_dijkstra, number_connected_components,
-        pagerank, shortest_path_unweighted, shortest_path_weighted,
+        is_perfect_matching, katz_centrality, local_efficiency, max_flow_edmonds_karp,
+        max_weight_matching, maximal_matching, min_edge_cover, min_weight_matching,
+        minimum_cut_edmonds_karp, minimum_st_edge_cut_edmonds_karp, multi_source_dijkstra,
+        number_connected_components, pagerank, shortest_path_unweighted, shortest_path_weighted,
     };
     use fnx_classes::Graph;
     use fnx_runtime::{
@@ -4074,7 +5678,7 @@ mod tests {
         canonical_environment_fingerprint, structured_test_log_schema_version,
     };
     use proptest::prelude::*;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
 
     fn packet_005_forensics_bundle(
         run_id: &str,
@@ -7585,5 +9189,282 @@ mod tests {
             prop_assert!(result.average_clustering >= 0.0 && result.average_clustering <= 1.0);
             prop_assert!(result.transitivity >= 0.0 && result.transitivity <= 1.0);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // cycle_basis tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cycle_basis_empty_graph_has_no_cycles() {
+        let graph = Graph::strict();
+        let result = cycle_basis(&graph, None);
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn cycle_basis_tree_has_no_cycles() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("c", "d").expect("edge add");
+        let result = cycle_basis(&graph, None);
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn cycle_basis_single_triangle() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        let result = cycle_basis(&graph, None);
+        assert_eq!(result.cycles.len(), 1, "triangle should have exactly one cycle in basis");
+    }
+
+    #[test]
+    fn cycle_basis_two_connected_triangles() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        graph.add_edge("c", "d").expect("edge add");
+        graph.add_edge("d", "e").expect("edge add");
+        graph.add_edge("c", "e").expect("edge add");
+        let result = cycle_basis(&graph, None);
+        assert_eq!(result.cycles.len(), 2, "two triangles sharing vertex should have 2 cycles");
+    }
+
+    #[test]
+    fn cycle_basis_square_graph() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("c", "d").expect("edge add");
+        graph.add_edge("d", "a").expect("edge add");
+        let result = cycle_basis(&graph, None);
+        assert_eq!(result.cycles.len(), 1, "4-cycle should have exactly one cycle in basis");
+        assert_eq!(result.cycles[0].len(), 4);
+    }
+
+    #[test]
+    fn cycle_basis_disconnected_components() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        graph.add_edge("x", "y").expect("edge add");
+        graph.add_edge("y", "z").expect("edge add");
+        graph.add_edge("x", "z").expect("edge add");
+        let result = cycle_basis(&graph, None);
+        assert_eq!(result.cycles.len(), 2, "two disconnected triangles should have 2 cycles");
+    }
+
+    // -----------------------------------------------------------------------
+    // all_simple_paths tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn all_simple_paths_missing_nodes_returns_empty() {
+        let graph = Graph::strict();
+        let result = all_simple_paths(&graph, "a", "b", None);
+        assert!(result.paths.is_empty());
+    }
+
+    #[test]
+    fn all_simple_paths_direct_edge() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        let result = all_simple_paths(&graph, "a", "b", None);
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0], vec!["a", "b"]);
+    }
+
+    #[test]
+    fn all_simple_paths_triangle() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        let result = all_simple_paths(&graph, "a", "c", None);
+        assert_eq!(result.paths.len(), 2, "triangle should have 2 paths from a to c");
+        assert!(result.paths.contains(&vec!["a".to_owned(), "c".to_owned()]));
+        assert!(result.paths.contains(&vec![
+            "a".to_owned(),
+            "b".to_owned(),
+            "c".to_owned()
+        ]));
+    }
+
+    #[test]
+    fn all_simple_paths_with_cutoff() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        let result = all_simple_paths(&graph, "a", "c", Some(1));
+        assert_eq!(result.paths.len(), 1, "cutoff=1 should only find direct path");
+        assert_eq!(result.paths[0], vec!["a", "c"]);
+    }
+
+    #[test]
+    fn all_simple_paths_no_path() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_node("c");
+        let result = all_simple_paths(&graph, "a", "c", None);
+        assert!(result.paths.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // global_efficiency tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn global_efficiency_empty_graph_is_zero() {
+        let graph = Graph::strict();
+        let result = global_efficiency(&graph);
+        assert!((result.efficiency - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn global_efficiency_single_node_is_zero() {
+        let mut graph = Graph::strict();
+        graph.add_node("a");
+        let result = global_efficiency(&graph);
+        assert!((result.efficiency - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn global_efficiency_complete_k3() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        let result = global_efficiency(&graph);
+        assert!(
+            (result.efficiency - 1.0).abs() < 1e-12,
+            "K3 should have global efficiency 1.0, got {}",
+            result.efficiency
+        );
+    }
+
+    #[test]
+    fn global_efficiency_path_graph_p3() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        let result = global_efficiency(&graph);
+        let expected = 5.0 / 6.0;
+        assert!(
+            (result.efficiency - expected).abs() < 1e-12,
+            "P3 global efficiency should be {expected}, got {}",
+            result.efficiency
+        );
+    }
+
+    #[test]
+    fn global_efficiency_disconnected_graph() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_node("c");
+        let result = global_efficiency(&graph);
+        let expected = 1.0 / 3.0;
+        assert!(
+            (result.efficiency - expected).abs() < 1e-12,
+            "disconnected graph global efficiency should be {expected}, got {}",
+            result.efficiency
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // local_efficiency tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn local_efficiency_empty_graph_is_zero() {
+        let graph = Graph::strict();
+        let result = local_efficiency(&graph);
+        assert!((result.efficiency - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn local_efficiency_complete_k4() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        graph.add_edge("a", "d").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("b", "d").expect("edge add");
+        graph.add_edge("c", "d").expect("edge add");
+        let result = local_efficiency(&graph);
+        assert!(
+            (result.efficiency - 1.0).abs() < 1e-12,
+            "K4 should have local efficiency 1.0, got {}",
+            result.efficiency
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // min_edge_cover tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn min_edge_cover_empty_graph() {
+        let graph = Graph::strict();
+        let result = min_edge_cover(&graph);
+        assert!(result.is_some());
+        assert!(result.unwrap().edges.is_empty());
+    }
+
+    #[test]
+    fn min_edge_cover_isolated_node_returns_none() {
+        let mut graph = Graph::strict();
+        graph.add_node("a");
+        let result = min_edge_cover(&graph);
+        assert!(result.is_none(), "isolated node means no edge cover exists");
+    }
+
+    #[test]
+    fn min_edge_cover_single_edge() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        let result = min_edge_cover(&graph);
+        assert!(result.is_some());
+        let cover = result.unwrap();
+        assert_eq!(cover.edges.len(), 1);
+        assert_eq!(cover.edges[0], ("a".to_owned(), "b".to_owned()));
+    }
+
+    #[test]
+    fn min_edge_cover_triangle() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("a", "c").expect("edge add");
+        let result = min_edge_cover(&graph);
+        assert!(result.is_some());
+        let cover = result.unwrap();
+        assert_eq!(cover.edges.len(), 2);
+        let mut covered: HashSet<&str> = HashSet::new();
+        for (l, r) in &cover.edges {
+            covered.insert(l.as_str());
+            covered.insert(r.as_str());
+        }
+        assert!(covered.contains("a"));
+        assert!(covered.contains("b"));
+        assert!(covered.contains("c"));
+    }
+
+    #[test]
+    fn min_edge_cover_path_graph() {
+        let mut graph = Graph::strict();
+        graph.add_edge("a", "b").expect("edge add");
+        graph.add_edge("b", "c").expect("edge add");
+        graph.add_edge("c", "d").expect("edge add");
+        let result = min_edge_cover(&graph);
+        assert!(result.is_some());
+        let cover = result.unwrap();
+        assert_eq!(cover.edges.len(), 2);
     }
 }

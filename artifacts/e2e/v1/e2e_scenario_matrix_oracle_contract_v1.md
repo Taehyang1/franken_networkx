@@ -1,10 +1,10 @@
 # E2E Scenario Matrix + Oracle Contract (V1)
 
-- generated_at_utc: 2026-02-25T22:14:57.817449+00:00
+- generated_at_utc: 2026-02-26T03:21:03.531814+00:00
 - baseline_comparator: legacy_networkx/main@python3.12
 - journey_count: 12
-- fixture_inventory_count: 51
-- covered_fixture_count: 51
+- fixture_inventory_count: 57
+- covered_fixture_count: 57
 - uncovered_fixture_count: 0
 
 ## Journey Coverage
@@ -53,3 +53,4 @@
 | `algorithm_distance` | `fnx-algorithms distance checks` | Distance measure output (eccentricity/diameter/radius/center/periphery) diverges from oracle expectation. |
 | `algorithm_mst` | `fnx-algorithms MST checks` | Minimum spanning tree output (edges/total_weight) diverges from oracle expectation. |
 | `algorithm_coloring` | `fnx-algorithms coloring checks` | Graph coloring output diverges from oracle expectation. |
+| `algorithm_connectivity` | `fnx-algorithms connectivity checks` | Node connectivity or minimum node cut output diverges from oracle expectation. |

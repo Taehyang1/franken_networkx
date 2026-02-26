@@ -1,14 +1,14 @@
 {
   "schema_version": "1.0.0",
   "artifact_id": "e2e-scenario-matrix-oracle-contract-v1",
-  "generated_at_utc": "2026-02-25T22:14:57.817449+00:00",
+  "generated_at_utc": "2026-02-26T03:21:03.531814+00:00",
   "baseline_comparator": "legacy_networkx/main@python3.12",
   "journey_summary": {
     "journey_count": 12,
     "strict_journey_count": 12,
     "hardened_journey_count": 12,
-    "fixture_inventory_count": 51,
-    "covered_fixture_count": 51,
+    "fixture_inventory_count": 57,
+    "covered_fixture_count": 57,
     "uncovered_fixture_count": 0
   },
   "deterministic_seed_policy": {
@@ -865,7 +865,12 @@
           "generated/minimum_spanning_tree_strict.json",
           "generated/tree_forest_strict.json",
           "generated/greedy_color_strict.json",
-          "generated/bipartite_strict.json"
+          "generated/bipartite_strict.json",
+          "generated/core_number_strict.json",
+          "generated/cliques_strict.json",
+          "generated/node_connectivity_strict.json",
+          "generated/cycle_basis_strict.json",
+          "generated/paths_efficiency_cover_strict.json"
         ],
         "deterministic_seed": 470103415025137257,
         "replay_command": "CARGO_TARGET_DIR=target-codex cargo run -q -p fnx-conformance --bin run_smoke -- --fixture generated/structure_articulation_points_strict.json --mode strict",
@@ -1027,7 +1032,12 @@
           "generated/minimum_spanning_tree_strict.json",
           "generated/tree_forest_strict.json",
           "generated/greedy_color_strict.json",
-          "generated/bipartite_strict.json"
+          "generated/bipartite_strict.json",
+          "generated/core_number_strict.json",
+          "generated/cliques_strict.json",
+          "generated/node_connectivity_strict.json",
+          "generated/cycle_basis_strict.json",
+          "generated/paths_efficiency_cover_strict.json"
         ],
         "deterministic_seed": 3609198798068896531,
         "replay_command": "CARGO_TARGET_DIR=target-codex cargo run -q -p fnx-conformance --bin run_smoke -- --fixture generated/structure_articulation_points_strict.json --mode hardened",
@@ -1196,7 +1206,8 @@
           "generated/centrality_pagerank_strict.json",
           "generated/centrality_eigenvector_strict.json",
           "generated/clustering_coefficient_strict.json",
-          "generated/triangles_square_clustering_strict.json"
+          "generated/triangles_square_clustering_strict.json",
+          "generated/avg_neighbor_degree_strict.json"
         ],
         "deterministic_seed": 3420695649051788629,
         "replay_command": "CARGO_TARGET_DIR=target-codex cargo run -q -p fnx-conformance --bin run_smoke -- --fixture generated/centrality_edge_betweenness_strict.json --mode strict",
@@ -1278,7 +1289,8 @@
         "fixture_id": "generated/centrality_closeness_strict.json",
         "fixture_ids": [
           "generated/centrality_closeness_strict.json",
-          "generated/triangles_square_clustering_strict.json"
+          "generated/triangles_square_clustering_strict.json",
+          "generated/avg_neighbor_degree_strict.json"
         ],
         "deterministic_seed": 9070744064313709177,
         "replay_command": "CARGO_TARGET_DIR=target-codex cargo run -q -p fnx-conformance --bin run_smoke -- --fixture generated/centrality_closeness_strict.json --mode hardened",
@@ -2463,6 +2475,7 @@
     "fixture_inventory": [
       "generated/adversarial_regression_bundle_v1.json",
       "generated/average_shortest_path_length_strict.json",
+      "generated/avg_neighbor_degree_strict.json",
       "generated/bipartite_strict.json",
       "generated/centrality_betweenness_strict.json",
       "generated/centrality_closeness_strict.json",
@@ -2473,11 +2486,14 @@
       "generated/centrality_hits_strict.json",
       "generated/centrality_katz_strict.json",
       "generated/centrality_pagerank_strict.json",
+      "generated/cliques_strict.json",
       "generated/clustering_coefficient_strict.json",
       "generated/components_connected_strict.json",
       "generated/conformance_harness_strict.json",
       "generated/convert_adjacency_strict.json",
       "generated/convert_edge_list_strict.json",
+      "generated/core_number_strict.json",
+      "generated/cycle_basis_strict.json",
       "generated/dispatch_route_strict.json",
       "generated/distance_measures_strict.json",
       "generated/flow_edge_connectivity_strict.json",
@@ -2496,6 +2512,8 @@
       "generated/matching_maximal_strict.json",
       "generated/matching_min_weight_strict.json",
       "generated/minimum_spanning_tree_strict.json",
+      "generated/node_connectivity_strict.json",
+      "generated/paths_efficiency_cover_strict.json",
       "generated/readwrite_adjlist_roundtrip_strict.json",
       "generated/readwrite_graphml_roundtrip_strict.json",
       "generated/readwrite_hardened_malformed.json",
@@ -2516,6 +2534,7 @@
     "covered_fixture_ids": [
       "generated/adversarial_regression_bundle_v1.json",
       "generated/average_shortest_path_length_strict.json",
+      "generated/avg_neighbor_degree_strict.json",
       "generated/bipartite_strict.json",
       "generated/centrality_betweenness_strict.json",
       "generated/centrality_closeness_strict.json",
@@ -2526,11 +2545,14 @@
       "generated/centrality_hits_strict.json",
       "generated/centrality_katz_strict.json",
       "generated/centrality_pagerank_strict.json",
+      "generated/cliques_strict.json",
       "generated/clustering_coefficient_strict.json",
       "generated/components_connected_strict.json",
       "generated/conformance_harness_strict.json",
       "generated/convert_adjacency_strict.json",
       "generated/convert_edge_list_strict.json",
+      "generated/core_number_strict.json",
+      "generated/cycle_basis_strict.json",
       "generated/dispatch_route_strict.json",
       "generated/distance_measures_strict.json",
       "generated/flow_edge_connectivity_strict.json",
@@ -2549,6 +2571,8 @@
       "generated/matching_maximal_strict.json",
       "generated/matching_min_weight_strict.json",
       "generated/minimum_spanning_tree_strict.json",
+      "generated/node_connectivity_strict.json",
+      "generated/paths_efficiency_cover_strict.json",
       "generated/readwrite_adjlist_roundtrip_strict.json",
       "generated/readwrite_graphml_roundtrip_strict.json",
       "generated/readwrite_hardened_malformed.json",
@@ -2653,6 +2677,11 @@
       "failure_class": "algorithm_coloring",
       "description": "Graph coloring output diverges from oracle expectation.",
       "source": "fnx-algorithms coloring checks"
+    },
+    {
+      "failure_class": "algorithm_connectivity",
+      "description": "Node connectivity or minimum node cut output diverges from oracle expectation.",
+      "source": "fnx-algorithms connectivity checks"
     }
   ],
   "alien_uplift_contract_card": {

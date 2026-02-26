@@ -34,6 +34,22 @@ def graph_snapshot(nx_graph: Any) -> dict[str, Any]:
     }
 
 
+def edge_ops(nx_graph: Any) -> list[dict[str, Any]]:
+    """Generate add_edge operations list from a NetworkX graph."""
+    ops: list[dict[str, Any]] = []
+    for left, right, attrs in nx_graph.edges(data=True):
+        canonical_left, canonical_right = canonical_edge(str(left), str(right))
+        entry: dict[str, Any] = {
+            "op": "add_edge",
+            "left": canonical_left,
+            "right": canonical_right,
+        }
+        if attrs:
+            entry["attrs"] = to_attr_str_map(dict(attrs))
+        ops.append(entry)
+    return ops
+
+
 def connected_components_snapshot(nx_graph: Any) -> list[list[str]]:
     import networkx as nx  # type: ignore
 
@@ -687,12 +703,12 @@ def main() -> int:
 
     # --- minimum spanning tree fixture ---
     mst_graph = nx.Graph()
-    mst_graph.add_edge("a", "b", weight=5.0)
-    mst_graph.add_edge("a", "c", weight=1.0)
-    mst_graph.add_edge("b", "c", weight=3.0)
-    mst_graph.add_edge("b", "d", weight=2.0)
-    mst_graph.add_edge("c", "d", weight=4.0)
-    mst_graph.add_edge("d", "e", weight=6.0)
+    mst_graph.add_edge("a", "b", weight=5)
+    mst_graph.add_edge("a", "c", weight=1)
+    mst_graph.add_edge("b", "c", weight=3)
+    mst_graph.add_edge("b", "d", weight=2)
+    mst_graph.add_edge("c", "d", weight=4)
+    mst_graph.add_edge("d", "e", weight=6)
     T = nx.minimum_spanning_tree(mst_graph, algorithm="kruskal")
     mst_edges = sorted(
         [
@@ -861,6 +877,159 @@ def main() -> int:
     }
     write_json(fixture_root / "bipartite_strict.json", bip_fixture)
 
+    # --- Core number oracle ---
+    core_graph = matching_graph  # reuse: a-b(5), a-c(1), b-c(3), b-d(2), c-d(4), d-e(6)
+    cn = nx.core_number(core_graph)
+    cn_fixture = {
+        "suite": "core_number_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b", "attrs": {"weight": "5"}},
+            {"op": "add_edge", "left": "a", "right": "c", "attrs": {"weight": "1"}},
+            {"op": "add_edge", "left": "b", "right": "c", "attrs": {"weight": "3"}},
+            {"op": "add_edge", "left": "b", "right": "d", "attrs": {"weight": "2"}},
+            {"op": "add_edge", "left": "c", "right": "d", "attrs": {"weight": "4"}},
+            {"op": "add_edge", "left": "d", "right": "e", "attrs": {"weight": "6"}},
+            {"op": "core_number_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(core_graph),
+            "core_numbers": [
+                {"node": n, "core": cn[n]} for n in sorted(cn)
+            ],
+        },
+    }
+    write_json(fixture_root / "core_number_strict.json", cn_fixture)
+
+    # --- Average neighbor degree + assortativity + voterank oracle ---
+    and_graph = matching_graph
+    avg_nd = nx.average_neighbor_degree(and_graph)
+    assort_r = nx.degree_assortativity_coefficient(and_graph)
+    vr = nx.voterank(and_graph)
+    and_fixture = {
+        "suite": "avg_neighbor_degree_v1",
+        "mode": "strict",
+        "operations": [
+            {"op": "add_edge", "left": "a", "right": "b", "attrs": {"weight": "5"}},
+            {"op": "add_edge", "left": "a", "right": "c", "attrs": {"weight": "1"}},
+            {"op": "add_edge", "left": "b", "right": "c", "attrs": {"weight": "3"}},
+            {"op": "add_edge", "left": "b", "right": "d", "attrs": {"weight": "2"}},
+            {"op": "add_edge", "left": "c", "right": "d", "attrs": {"weight": "4"}},
+            {"op": "add_edge", "left": "d", "right": "e", "attrs": {"weight": "6"}},
+            {"op": "average_neighbor_degree_query"},
+            {"op": "degree_assortativity_query"},
+            {"op": "voterank_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(and_graph),
+            "average_neighbor_degree": [
+                {"node": n, "avg_neighbor_degree": round(avg_nd[n], 10)}
+                for n in sorted(avg_nd)
+            ],
+            "degree_assortativity": assort_r,
+            "voterank": vr,
+        },
+    }
+    write_json(fixture_root / "avg_neighbor_degree_strict.json", and_fixture)
+
+    # --- Node connectivity oracle ---
+    nc_graph = nx.Graph()
+    nc_graph.add_edge("a", "b", weight=5)
+    nc_graph.add_edge("a", "c", weight=1)
+    nc_graph.add_edge("b", "c", weight=3)
+    nc_graph.add_edge("b", "d", weight=2)
+    nc_graph.add_edge("c", "d", weight=4)
+    nc_graph.add_edge("d", "e", weight=6)
+    nc_ae = nx.node_connectivity(nc_graph, "a", "e")
+    mnc_ae = sorted(nx.minimum_node_cut(nc_graph, "a", "e"))
+    gnc = nx.node_connectivity(nc_graph)
+    gmnc = sorted(nx.minimum_node_cut(nc_graph))
+    nc_fixture = {
+        "suite": "node_connectivity_v1",
+        "mode": "strict",
+        "operations": edge_ops(nc_graph) + [
+            {"op": "node_connectivity_query", "source": "a", "target": "e"},
+            {"op": "minimum_node_cut_query", "source": "a", "target": "e"},
+            {"op": "global_node_connectivity_query"},
+            {"op": "global_minimum_node_cut_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(nc_graph),
+            "node_connectivity": nc_ae,
+            "minimum_node_cut": mnc_ae,
+            "global_node_connectivity": gnc,
+            "global_minimum_node_cut": gmnc,
+        },
+    }
+    write_json(fixture_root / "node_connectivity_strict.json", nc_fixture)
+
+    # --- Clique enumeration oracle ---
+    clique_graph = nx.Graph()
+    clique_graph.add_edge("a", "b", weight=5)
+    clique_graph.add_edge("a", "c", weight=1)
+    clique_graph.add_edge("b", "c", weight=3)
+    clique_graph.add_edge("b", "d", weight=2)
+    clique_graph.add_edge("c", "d", weight=4)
+    clique_graph.add_edge("d", "e", weight=6)
+    cliques = sorted([sorted(c) for c in nx.find_cliques(clique_graph)])
+    clique_number = max(len(c) for c in cliques)
+    clique_fixture = {
+        "suite": "cliques_v1",
+        "mode": "strict",
+        "operations": edge_ops(clique_graph) + [{"op": "find_cliques_query"}],
+        "expected": {
+            "graph": graph_snapshot(clique_graph),
+            "cliques": cliques,
+            "clique_number": clique_number,
+        },
+    }
+    write_json(fixture_root / "cliques_strict.json", clique_fixture)
+
+    # --- Cycle basis oracle ---
+    cb_graph = matching_graph  # reuse: a-b(5), a-c(1), b-c(3), b-d(2), c-d(4), d-e(6)
+    cycles = [sorted(c) for c in nx.cycle_basis(cb_graph)]
+    cycles.sort()
+    cb_fixture = {
+        "suite": "cycle_basis_v1",
+        "mode": "strict",
+        "operations": edge_ops(cb_graph) + [{"op": "cycle_basis_query"}],
+        "expected": {
+            "graph": graph_snapshot(cb_graph),
+            "cycle_basis": cycles,
+        },
+    }
+    write_json(fixture_root / "cycle_basis_strict.json", cb_fixture)
+
+    # --- Paths, efficiency, edge cover oracle ---
+    pec_graph = matching_graph  # reuse same graph
+    all_paths = sorted(
+        [list(p) for p in nx.all_simple_paths(pec_graph, "a", "e")]
+    )
+    ge = nx.global_efficiency(pec_graph)
+    le = nx.local_efficiency(pec_graph)
+    cover = nx.min_edge_cover(pec_graph)
+    cover_sorted = sorted(
+        [{"left": min(str(u), str(v)), "right": max(str(u), str(v))} for u, v in cover]
+    , key=lambda e: (e["left"], e["right"]))
+    pec_fixture = {
+        "suite": "paths_efficiency_cover_v1",
+        "mode": "strict",
+        "operations": edge_ops(pec_graph) + [
+            {"op": "all_simple_paths_query", "source": "a", "target": "e"},
+            {"op": "global_efficiency_query"},
+            {"op": "local_efficiency_query"},
+            {"op": "min_edge_cover_query"},
+        ],
+        "expected": {
+            "graph": graph_snapshot(pec_graph),
+            "all_simple_paths": all_paths,
+            "global_efficiency": round(ge, 10),
+            "local_efficiency": round(le, 10),
+            "min_edge_cover": cover_sorted,
+        },
+    }
+    write_json(fixture_root / "paths_efficiency_cover_strict.json", pec_fixture)
+
     oracle_capture = {
         "oracle": "legacy_networkx",
         "legacy_root": str(legacy_root),
@@ -896,6 +1065,12 @@ def main() -> int:
             "tree_forest_strict.json",
             "greedy_color_strict.json",
             "bipartite_strict.json",
+            "core_number_strict.json",
+            "avg_neighbor_degree_strict.json",
+            "cliques_strict.json",
+            "node_connectivity_strict.json",
+            "cycle_basis_strict.json",
+            "paths_efficiency_cover_strict.json",
         ],
         "snapshots": {
             "convert_graph": graph_snapshot(convert_graph),
@@ -920,6 +1095,12 @@ def main() -> int:
             "tree_graph": graph_snapshot(tree_graph),
             "color_graph": graph_snapshot(color_graph),
             "bip_graph": graph_snapshot(bip_graph),
+            "core_graph": graph_snapshot(core_graph),
+            "and_graph": graph_snapshot(and_graph),
+            "clique_graph": graph_snapshot(clique_graph),
+            "nc_graph": graph_snapshot(nc_graph),
+            "cb_graph": graph_snapshot(cb_graph),
+            "pec_graph": graph_snapshot(pec_graph),
         },
     }
     write_json(artifact_root / "legacy_networkx_capture.json", oracle_capture)

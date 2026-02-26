@@ -1,27 +1,32 @@
 #![forbid(unsafe_code)]
 
 use fnx_algorithms::{
-    AverageShortestPathLengthResult, CentralityScore, ComplexityWitness, DensityResult,
-    DistanceMeasuresResult,
-    EdgeCentralityScore, EdgeCutResult, GlobalEdgeCutResult, HasPathResult, IsConnectedResult,
-    MaximalMatchingResult, MinimumSpanningTreeResult, ShortestPathLengthResult,
+    AllSimplePathsResult, AverageNeighborDegreeResult, AverageShortestPathLengthResult,
+    CentralityScore, ComplexityWitness, CoreNumberResult, CycleBasisResult,
+    DegreeAssortativityResult, DensityResult, DistanceMeasuresResult,
+    EdgeCentralityScore, EdgeCutResult, GlobalEdgeCutResult, GlobalEfficiencyResult,
+    HasPathResult, IsConnectedResult, LocalEfficiencyResult,
+    MaximalMatchingResult, MinEdgeCoverResult, MinimumSpanningTreeResult, ShortestPathLengthResult,
     BipartiteSetsResult, GreedyColorResult, IsBipartiteResult, IsForestResult, IsTreeResult,
-    MinimumCutResult, SquareClusteringResult, TrianglesResult,
+    MinimumCutResult, SquareClusteringResult, TrianglesResult, VoterankResult,
     WeightedMatchingResult, WeightedShortestPathsResult,
-    articulation_points, average_shortest_path_length, bellman_ford_shortest_paths,
-    betweenness_centrality, bridges,
-    closeness_centrality, clustering_coefficient, connected_components, degree_centrality,
-    density, distance_measures, edge_betweenness_centrality, has_path,
+    all_simple_paths, articulation_points, average_neighbor_degree, average_shortest_path_length,
+    bellman_ford_shortest_paths, betweenness_centrality, bridges,
+    closeness_centrality, clustering_coefficient, connected_components, core_number,
+    cycle_basis, degree_assortativity_coefficient, degree_centrality,
+    density, distance_measures, edge_betweenness_centrality, global_efficiency, has_path,
     edge_connectivity_edmonds_karp, eigenvector_centrality, global_edge_connectivity_edmonds_karp,
     global_minimum_edge_cut_edmonds_karp, harmonic_centrality, hits_centrality, is_connected,
-    katz_centrality,
+    katz_centrality, local_efficiency, min_edge_cover,
     max_flow_edmonds_karp, max_weight_matching, maximal_matching, min_weight_matching,
     minimum_cut_edmonds_karp, minimum_spanning_tree, minimum_st_edge_cut_edmonds_karp,
     multi_source_dijkstra,
     bipartite_sets, greedy_color, is_bipartite, is_forest, is_tree,
     number_connected_components, pagerank, shortest_path_length, shortest_path_unweighted,
-    shortest_path_weighted, square_clustering, triangles,
+    shortest_path_weighted, square_clustering, triangles, voterank,
 };
+// find_cliques, node_connectivity, minimum_node_cut, global_node_connectivity,
+// global_minimum_node_cut used via fnx_algorithms:: prefix
 use fnx_classes::{AttrMap, EdgeSnapshot, Graph, GraphSnapshot};
 use fnx_convert::{AdjacencyPayload, EdgeListPayload, GraphConverter};
 use fnx_dispatch::{BackendRegistry, BackendSpec, DispatchDecision, DispatchRequest};
@@ -362,6 +367,29 @@ enum Operation {
     GreedyColorQuery,
     IsBipartiteQuery,
     BipartiteSetsQuery,
+    CoreNumberQuery,
+    AverageNeighborDegreeQuery,
+    DegreeAssortativityQuery,
+    VoterankQuery,
+    FindCliquesQuery,
+    NodeConnectivityQuery {
+        source: String,
+        target: String,
+    },
+    MinimumNodeCutQuery {
+        source: String,
+        target: String,
+    },
+    GlobalNodeConnectivityQuery,
+    GlobalMinimumNodeCutQuery,
+    CycleBasisQuery,
+    AllSimplePathsQuery {
+        source: String,
+        target: String,
+    },
+    GlobalEfficiencyQuery,
+    LocalEfficiencyQuery,
+    MinEdgeCoverQuery,
     DispatchResolve {
         operation: String,
         #[serde(default)]
@@ -529,6 +557,36 @@ struct ExpectedState {
     #[serde(default)]
     bipartite_sets: Option<ExpectedBipartiteSets>,
     #[serde(default)]
+    core_numbers: Option<Vec<ExpectedCoreNumber>>,
+    #[serde(default)]
+    average_neighbor_degree: Option<Vec<ExpectedAvgNeighborDegree>>,
+    #[serde(default)]
+    degree_assortativity: Option<f64>,
+    #[serde(default)]
+    voterank: Option<Vec<String>>,
+    #[serde(default)]
+    cliques: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    clique_number: Option<usize>,
+    #[serde(default)]
+    node_connectivity: Option<usize>,
+    #[serde(default)]
+    minimum_node_cut: Option<Vec<String>>,
+    #[serde(default)]
+    global_node_connectivity: Option<usize>,
+    #[serde(default)]
+    global_minimum_node_cut: Option<Vec<String>>,
+    #[serde(default)]
+    cycle_basis: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    all_simple_paths: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    global_efficiency: Option<f64>,
+    #[serde(default)]
+    local_efficiency: Option<f64>,
+    #[serde(default)]
+    min_edge_cover: Option<Vec<ExpectedEdgePair>>,
+    #[serde(default)]
     dispatch: Option<ExpectedDispatch>,
     #[serde(default)]
     serialized_edgelist: Option<String>,
@@ -649,6 +707,24 @@ struct ExpectedMst {
     total_weight: f64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedCoreNumber {
+    node: String,
+    core: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedAvgNeighborDegree {
+    node: String,
+    avg_neighbor_degree: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExpectedEdgePair {
+    left: String,
+    right: String,
+}
+
 #[derive(Debug)]
 struct ExecutionContext {
     graph: Graph,
@@ -703,6 +779,20 @@ struct ExecutionContext {
     greedy_color_result: Option<GreedyColorResult>,
     is_bipartite_result: Option<IsBipartiteResult>,
     bipartite_sets_result: Option<BipartiteSetsResult>,
+    core_number_result: Option<CoreNumberResult>,
+    avg_neighbor_degree_result: Option<AverageNeighborDegreeResult>,
+    degree_assortativity_result: Option<DegreeAssortativityResult>,
+    voterank_result: Option<VoterankResult>,
+    find_cliques_result: Option<fnx_algorithms::FindCliquesResult>,
+    node_connectivity_result: Option<fnx_algorithms::NodeConnectivityResult>,
+    minimum_node_cut_result: Option<fnx_algorithms::MinimumNodeCutResult>,
+    global_node_connectivity_result: Option<fnx_algorithms::NodeConnectivityResult>,
+    global_minimum_node_cut_result: Option<fnx_algorithms::MinimumNodeCutResult>,
+    cycle_basis_result: Option<CycleBasisResult>,
+    all_simple_paths_result: Option<AllSimplePathsResult>,
+    global_efficiency_result: Option<GlobalEfficiencyResult>,
+    local_efficiency_result: Option<LocalEfficiencyResult>,
+    min_edge_cover_result: Option<MinEdgeCoverResult>,
     warnings: Vec<String>,
     witness: Option<ComplexityWitness>,
 }
@@ -1483,6 +1573,20 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         greedy_color_result: None,
         is_bipartite_result: None,
         bipartite_sets_result: None,
+        core_number_result: None,
+        avg_neighbor_degree_result: None,
+        degree_assortativity_result: None,
+        voterank_result: None,
+        find_cliques_result: None,
+        node_connectivity_result: None,
+        minimum_node_cut_result: None,
+        global_node_connectivity_result: None,
+        global_minimum_node_cut_result: None,
+        cycle_basis_result: None,
+        all_simple_paths_result: None,
+        global_efficiency_result: None,
+        local_efficiency_result: None,
+        min_edge_cover_result: None,
         warnings: Vec::new(),
         witness: None,
     };
@@ -1758,6 +1862,78 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
                 let result = bipartite_sets(&context.graph);
                 context.bipartite_sets_result = Some(result.clone());
                 context.witness = Some(result.witness);
+            }
+            Operation::CoreNumberQuery => {
+                let result = core_number(&context.graph);
+                context.core_number_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::AverageNeighborDegreeQuery => {
+                let result = average_neighbor_degree(&context.graph);
+                context.avg_neighbor_degree_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::DegreeAssortativityQuery => {
+                let result = degree_assortativity_coefficient(&context.graph);
+                context.degree_assortativity_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::VoterankQuery => {
+                let result = voterank(&context.graph);
+                context.voterank_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::FindCliquesQuery => {
+                let result = fnx_algorithms::find_cliques(&context.graph);
+                context.find_cliques_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::NodeConnectivityQuery { source, target } => {
+                let result = fnx_algorithms::node_connectivity(&context.graph, &source, &target);
+                context.node_connectivity_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::MinimumNodeCutQuery { source, target } => {
+                let result = fnx_algorithms::minimum_node_cut(&context.graph, &source, &target);
+                context.minimum_node_cut_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::GlobalNodeConnectivityQuery => {
+                let result = fnx_algorithms::global_node_connectivity(&context.graph);
+                context.global_node_connectivity_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::GlobalMinimumNodeCutQuery => {
+                let result = fnx_algorithms::global_minimum_node_cut(&context.graph);
+                context.global_minimum_node_cut_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::CycleBasisQuery => {
+                let result = cycle_basis(&context.graph, None);
+                context.cycle_basis_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::AllSimplePathsQuery { source, target } => {
+                let result = all_simple_paths(&context.graph, &source, &target, None);
+                context.all_simple_paths_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::GlobalEfficiencyQuery => {
+                let result = global_efficiency(&context.graph);
+                context.global_efficiency_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::LocalEfficiencyQuery => {
+                let result = local_efficiency(&context.graph);
+                context.local_efficiency_result = Some(result.clone());
+                context.witness = Some(result.witness);
+            }
+            Operation::MinEdgeCoverQuery => {
+                let result = min_edge_cover(&context.graph);
+                context.min_edge_cover_result = result.clone();
+                if let Some(ref r) = result {
+                    context.witness = Some(r.witness.clone());
+                }
             }
             Operation::DispatchResolve {
                 operation,
@@ -3257,6 +3433,363 @@ fn run_fixture(path: PathBuf, default_strict_mode: bool, fixture_root: &Path) ->
         }
     }
 
+    if let Some(expected_cores) = &fixture.expected.core_numbers {
+        match context.core_number_result.as_ref() {
+            Some(actual) => {
+                let actual_map: BTreeMap<&str, usize> = actual
+                    .core_numbers
+                    .iter()
+                    .map(|c| (c.node.as_str(), c.core))
+                    .collect();
+                let expected_map: BTreeMap<&str, usize> = expected_cores
+                    .iter()
+                    .map(|c| (c.node.as_str(), c.core))
+                    .collect();
+                if actual_map != expected_map {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_core_number".to_owned(),
+                        message: format!(
+                            "core_number mismatch: expected {expected_map:?}, got {actual_map:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_core_number".to_owned(),
+                message: "expected core_number result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_and) = &fixture.expected.average_neighbor_degree {
+        match context.avg_neighbor_degree_result.as_ref() {
+            Some(actual) => {
+                let actual_map: BTreeMap<&str, f64> = actual
+                    .scores
+                    .iter()
+                    .map(|s| (s.node.as_str(), s.avg_neighbor_degree))
+                    .collect();
+                for exp in expected_and {
+                    match actual_map.get(exp.node.as_str()) {
+                        Some(&actual_score) => {
+                            if (actual_score - exp.avg_neighbor_degree).abs() > 1e-9 {
+                                mismatches.push(Mismatch {
+                                    category: "algorithm_avg_neighbor_degree".to_owned(),
+                                    message: format!(
+                                        "average_neighbor_degree mismatch for {}: expected {}, got {}",
+                                        exp.node, exp.avg_neighbor_degree, actual_score
+                                    ),
+                                });
+                            }
+                        }
+                        None => mismatches.push(Mismatch {
+                            category: "algorithm_avg_neighbor_degree".to_owned(),
+                            message: format!(
+                                "average_neighbor_degree missing node {}",
+                                exp.node
+                            ),
+                        }),
+                    }
+                }
+                if actual.scores.len() != expected_and.len() {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_avg_neighbor_degree".to_owned(),
+                        message: format!(
+                            "average_neighbor_degree node count mismatch: expected {}, got {}",
+                            expected_and.len(),
+                            actual.scores.len()
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_avg_neighbor_degree".to_owned(),
+                message: "expected average_neighbor_degree result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_r) = fixture.expected.degree_assortativity {
+        match context.degree_assortativity_result.as_ref() {
+            Some(actual) => {
+                if (actual.coefficient - expected_r).abs() > 1e-9 {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_assortativity".to_owned(),
+                        message: format!(
+                            "degree_assortativity mismatch: expected {expected_r}, got {}",
+                            actual.coefficient
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_assortativity".to_owned(),
+                message: "expected degree_assortativity result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_vr) = &fixture.expected.voterank {
+        match context.voterank_result.as_ref() {
+            Some(actual) => {
+                if actual.ranked != *expected_vr {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_voterank".to_owned(),
+                        message: format!(
+                            "voterank mismatch: expected {expected_vr:?}, got {:?}",
+                            actual.ranked
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_voterank".to_owned(),
+                message: "expected voterank result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_cliques) = &fixture.expected.cliques {
+        match context.find_cliques_result.as_ref() {
+            Some(actual) => {
+                if actual.cliques != *expected_cliques {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_cliques".to_owned(),
+                        message: format!(
+                            "cliques mismatch: expected {expected_cliques:?}, got {:?}",
+                            actual.cliques
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_cliques".to_owned(),
+                message: "expected find_cliques result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_cn) = fixture.expected.clique_number {
+        match context.find_cliques_result.as_ref() {
+            Some(actual) => {
+                let actual_cn = actual.cliques.iter().map(|c| c.len()).max().unwrap_or(0);
+                if actual_cn != expected_cn {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_cliques".to_owned(),
+                        message: format!(
+                            "clique_number mismatch: expected {expected_cn}, got {actual_cn}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_cliques".to_owned(),
+                message: "expected clique_number result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_nc) = fixture.expected.node_connectivity {
+        match context.node_connectivity_result.as_ref() {
+            Some(actual) => {
+                if actual.value != expected_nc {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_connectivity".to_owned(),
+                        message: format!(
+                            "node_connectivity mismatch: expected {expected_nc}, got {}",
+                            actual.value
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_connectivity".to_owned(),
+                message: "expected node_connectivity result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_mnc) = &fixture.expected.minimum_node_cut {
+        match context.minimum_node_cut_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.cut_nodes.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_mnc.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_connectivity".to_owned(),
+                        message: format!(
+                            "minimum_node_cut mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_connectivity".to_owned(),
+                message: "expected minimum_node_cut result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_gnc) = fixture.expected.global_node_connectivity {
+        match context.global_node_connectivity_result.as_ref() {
+            Some(actual) => {
+                if actual.value != expected_gnc {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_connectivity".to_owned(),
+                        message: format!(
+                            "global_node_connectivity mismatch: expected {expected_gnc}, got {}",
+                            actual.value
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_connectivity".to_owned(),
+                message: "expected global_node_connectivity result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_gmnc) = &fixture.expected.global_minimum_node_cut {
+        match context.global_minimum_node_cut_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.cut_nodes.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_gmnc.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm_connectivity".to_owned(),
+                        message: format!(
+                            "global_minimum_node_cut mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm_connectivity".to_owned(),
+                message: "expected global_minimum_node_cut result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_cycles) = &fixture.expected.cycle_basis {
+        match context.cycle_basis_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted: Vec<Vec<String>> = actual.cycles.iter().map(|c| {
+                    let mut sorted = c.clone();
+                    sorted.sort();
+                    sorted
+                }).collect();
+                actual_sorted.sort();
+                let mut expected_sorted: Vec<Vec<String>> = expected_cycles.iter().map(|c| {
+                    let mut sorted = c.clone();
+                    sorted.sort();
+                    sorted
+                }).collect();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm".to_owned(),
+                        message: format!(
+                            "cycle_basis mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected cycle_basis result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_paths) = &fixture.expected.all_simple_paths {
+        match context.all_simple_paths_result.as_ref() {
+            Some(actual) => {
+                let mut actual_sorted = actual.paths.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_paths.clone();
+                expected_sorted.sort();
+                if actual_sorted != expected_sorted {
+                    mismatches.push(Mismatch {
+                        category: "algorithm".to_owned(),
+                        message: format!(
+                            "all_simple_paths mismatch: expected {expected_sorted:?}, got {actual_sorted:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected all_simple_paths result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_ge) = fixture.expected.global_efficiency {
+        match context.global_efficiency_result.as_ref() {
+            Some(actual) if (actual.efficiency - expected_ge).abs() <= 1e-6 => {}
+            Some(actual) => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: format!(
+                    "global_efficiency mismatch: expected {expected_ge}, got {}",
+                    actual.efficiency
+                ),
+            }),
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected global_efficiency result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_le) = fixture.expected.local_efficiency {
+        match context.local_efficiency_result.as_ref() {
+            Some(actual) if (actual.efficiency - expected_le).abs() <= 1e-6 => {}
+            Some(actual) => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: format!(
+                    "local_efficiency mismatch: expected {expected_le}, got {}",
+                    actual.efficiency
+                ),
+            }),
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected local_efficiency result but none produced".to_owned(),
+            }),
+        }
+    }
+
+    if let Some(expected_cover) = &fixture.expected.min_edge_cover {
+        match context.min_edge_cover_result.as_ref() {
+            Some(actual) => {
+                let mut actual_edges: Vec<(String, String)> = actual.edges.iter().map(|(l, r)| {
+                    if l <= r { (l.clone(), r.clone()) } else { (r.clone(), l.clone()) }
+                }).collect();
+                actual_edges.sort();
+                let mut expected_edges: Vec<(String, String)> = expected_cover.iter().map(|e| {
+                    if e.left <= e.right { (e.left.clone(), e.right.clone()) } else { (e.right.clone(), e.left.clone()) }
+                }).collect();
+                expected_edges.sort();
+                if actual_edges != expected_edges {
+                    mismatches.push(Mismatch {
+                        category: "algorithm".to_owned(),
+                        message: format!(
+                            "min_edge_cover mismatch: expected {expected_edges:?}, got {actual_edges:?}"
+                        ),
+                    });
+                }
+            }
+            None => mismatches.push(Mismatch {
+                category: "algorithm".to_owned(),
+                message: "expected min_edge_cover result but none produced".to_owned(),
+            }),
+        }
+    }
+
     if let Some(expected_dispatch) = fixture.expected.dispatch {
         match context.dispatch_decision {
             Some(actual) => {
@@ -3491,6 +4024,20 @@ fn default_dispatch_registry(mode: CompatibilityMode) -> BackendRegistry {
             "greedy_color",
             "is_bipartite",
             "bipartite_sets",
+            "core_number",
+            "average_neighbor_degree",
+            "degree_assortativity",
+            "voterank",
+            "find_cliques",
+            "node_connectivity",
+            "minimum_node_cut",
+            "global_node_connectivity",
+            "global_minimum_node_cut",
+            "cycle_basis",
+            "all_simple_paths",
+            "global_efficiency",
+            "local_efficiency",
+            "min_edge_cover",
         ]),
         allow_in_strict: true,
         allow_in_hardened: true,
