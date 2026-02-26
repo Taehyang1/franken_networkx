@@ -689,6 +689,110 @@ mod tests {
     }
 
     #[test]
+    fn watts_strogatz_basic_structure() {
+        let mut gg = GraphGenerator::strict();
+        let report = gg
+            .watts_strogatz_graph(20, 4, 0.0, 42)
+            .expect("watts-strogatz should succeed");
+        // With p=0 no rewiring happens — we get a ring lattice.
+        // Each of 20 nodes connects to 2 neighbors on each side → 20*2 = 40 half-edges → 40 edges.
+        assert_eq!(report.graph.node_count(), 20);
+        assert_eq!(report.graph.edge_count(), 40);
+    }
+
+    #[test]
+    fn watts_strogatz_with_rewiring_is_seed_reproducible() {
+        let mut gg_a = GraphGenerator::strict();
+        let mut gg_b = GraphGenerator::strict();
+        let a = gg_a
+            .watts_strogatz_graph(30, 4, 0.3, 123)
+            .expect("ws should succeed")
+            .graph
+            .snapshot();
+        let b = gg_b
+            .watts_strogatz_graph(30, 4, 0.3, 123)
+            .expect("ws should succeed")
+            .graph
+            .snapshot();
+        assert_eq!(a, b, "watts-strogatz must be seed-reproducible");
+    }
+
+    #[test]
+    fn watts_strogatz_rejects_odd_k() {
+        let mut gg = GraphGenerator::strict();
+        let err = gg
+            .watts_strogatz_graph(10, 3, 0.1, 1)
+            .expect_err("odd k should fail");
+        assert!(matches!(err, GenerationError::FailClosed { .. }));
+    }
+
+    #[test]
+    fn watts_strogatz_rejects_k_gt_n() {
+        let mut gg = GraphGenerator::strict();
+        let err = gg
+            .watts_strogatz_graph(4, 6, 0.1, 1)
+            .expect_err("k > n should fail");
+        assert!(matches!(err, GenerationError::FailClosed { .. }));
+    }
+
+    #[test]
+    fn barabasi_albert_basic_structure() {
+        let mut gg = GraphGenerator::strict();
+        let report = gg
+            .barabasi_albert_graph(20, 2, 42)
+            .expect("barabasi-albert should succeed");
+        assert_eq!(report.graph.node_count(), 20);
+        // Initial complete graph on m=2 nodes has 1 edge.
+        // Then 18 nodes are added, each with 2 edges → 1 + 18*2 = 37 edges.
+        assert_eq!(report.graph.edge_count(), 37);
+    }
+
+    #[test]
+    fn barabasi_albert_is_seed_reproducible() {
+        let mut gg_a = GraphGenerator::strict();
+        let mut gg_b = GraphGenerator::strict();
+        let a = gg_a
+            .barabasi_albert_graph(50, 3, 99)
+            .expect("ba should succeed")
+            .graph
+            .snapshot();
+        let b = gg_b
+            .barabasi_albert_graph(50, 3, 99)
+            .expect("ba should succeed")
+            .graph
+            .snapshot();
+        assert_eq!(a, b, "barabasi-albert must be seed-reproducible");
+    }
+
+    #[test]
+    fn barabasi_albert_rejects_m_zero() {
+        let mut gg = GraphGenerator::strict();
+        let err = gg
+            .barabasi_albert_graph(10, 0, 1)
+            .expect_err("m=0 should fail");
+        assert!(matches!(err, GenerationError::FailClosed { .. }));
+    }
+
+    #[test]
+    fn barabasi_albert_rejects_m_gt_n() {
+        let mut gg = GraphGenerator::strict();
+        let err = gg
+            .barabasi_albert_graph(3, 5, 1)
+            .expect_err("m > n should fail");
+        assert!(matches!(err, GenerationError::FailClosed { .. }));
+    }
+
+    #[test]
+    fn barabasi_albert_m_equals_n_is_complete() {
+        let mut gg = GraphGenerator::strict();
+        let report = gg
+            .barabasi_albert_graph(5, 5, 42)
+            .expect("ba with m=n should succeed");
+        // m=n means we just get a complete graph on 5 nodes = 10 edges.
+        assert_eq!(report.graph.edge_count(), 10);
+    }
+
+    #[test]
     fn strict_mode_fails_for_invalid_probability() {
         let mut generator = GraphGenerator::strict();
         let err = generator
